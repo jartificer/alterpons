@@ -22,6 +22,12 @@
 #include <iomanip>
 #include <iostream>
 
+#ifdef YABRIDGE_PE_HOST
+#include <streambuf>
+
+#include <windows.h>
+#endif
+
 /**
  * The environment variable indicating whether to log to a file. Will log to
  * STDERR if not specified.
@@ -41,6 +47,77 @@ constexpr char logging_verbosity_environment_variable[] =
  */
 constexpr char editor_tracing_flag[] = "+editor";
 
+#ifdef YABRIDGE_PE_HOST
+namespace {
+
+/**
+ * An unbuffered output stream buffer that writes to a Win32 handle. The 32-bit
+ * PE Wine plugin host uses this to write log output to the process' original
+ * STDERR stream, since there's no `/dev/stderr` equivalent we can open there.
+ * The handle is duplicated so it remains valid when the group host replaces the
+ * standard handles.
+ */
+class HandleStreamBuf : public std::streambuf {
+   public:
+    explicit HandleStreamBuf(HANDLE handle) {
+        DuplicateHandle(GetCurrentProcess(), handle, GetCurrentProcess(),
+                        &handle_, 0, FALSE, DUPLICATE_SAME_ACCESS);
+    }
+
+    ~HandleStreamBuf() noexcept override {
+        if (handle_) {
+            CloseHandle(handle_);
+        }
+    }
+
+   protected:
+    std::streamsize xsputn(const char* data, std::streamsize size) override {
+        std::streamsize total_written = 0;
+        while (handle_ && total_written < size) {
+            DWORD written = 0;
+            if (!WriteFile(handle_, data + total_written,
+                           static_cast<DWORD>(size - total_written), &written,
+                           nullptr) ||
+                written == 0) {
+                break;
+            }
+
+            total_written += written;
+        }
+
+        return total_written;
+    }
+
+    int_type overflow(int_type character) override {
+        if (traits_type::eq_int_type(character, traits_type::eof())) {
+            return traits_type::not_eof(character);
+        }
+
+        const char c = traits_type::to_char_type(character);
+        return xsputn(&c, 1) == 1 ? character : traits_type::eof();
+    }
+
+   private:
+    HANDLE handle_ = nullptr;
+};
+
+/**
+ * An output stream that owns a `HandleStreamBuf`.
+ */
+class HandleOStream : public std::ostream {
+   public:
+    explicit HandleOStream(HANDLE handle)
+        : std::ostream(nullptr), buffer_(handle) {
+        rdbuf(&buffer_);
+    }
+
+   private:
+    HandleStreamBuf buffer_;
+};
+
+}  // namespace
+#endif
+
 Logger::Logger(std::shared_ptr<std::ostream> stream,
                Verbosity verbosity_level,
                bool editor_tracing,
@@ -59,7 +136,8 @@ Logger Logger::create_from_environment(std::string prefix,
     const char* file_path_env = getenv(logging_file_environment_variable);
     // NOLINTNEXTLINE(concurrency-mt-unsafe)
     const char* verbosity_env = getenv(logging_verbosity_environment_variable);
-    std::string file_path = file_path_env ? std::string(file_path_env) : "";
+    std::string file_path =
+        file_path_env ? to_host_path(std::string(file_path_env)) : "";
     std::string verbosity = verbosity_env ? std::string(verbosity_env) : "";
 
     // Editor debug tracing is an optional flag that can be added to any debug
@@ -94,8 +172,13 @@ Logger Logger::create_from_environment(std::string prefix,
             // and STDOUT streams to a pipe. Luckily `/dev/stderr` stays
             // unaffected, so we can still write there without causing infinite
             // loops.
+#ifdef YABRIDGE_PE_HOST
+            stream = std::make_shared<HandleOStream>(
+                GetStdHandle(STD_ERROR_HANDLE));
+#else
             stream = std::make_shared<std::ofstream>(
                 "/dev/stderr", std::fstream::out | std::fstream::app);
+#endif
         }
     }
 
@@ -112,7 +195,7 @@ Logger Logger::create_wine_stderr() {
 }
 
 Logger Logger::create_exception_logger() {
-#ifdef __WINE__
+#if defined(__WINE__) || defined(YABRIDGE_PE_HOST)
     return Logger::create_wine_stderr();
 #else
     return Logger::create_from_environment("[error] ");
@@ -131,7 +214,11 @@ void Logger::log(const std::string& message) {
         // actually get a timestamp in a threadsafe way? `localtime_r` in C++ is
         // not portable but luckily we only have to support GCC anyway.
         std::tm tm;
+#ifdef YABRIDGE_PE_HOST
+        localtime_s(&tm, &timestamp);
+#else
         localtime_r(&timestamp, &tm);
+#endif
 
         formatted_message << std::put_time(&tm, "%T") << " ";
     }

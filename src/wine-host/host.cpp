@@ -52,11 +52,17 @@ static const std::string host_name = "yabridge host version " +
  * host request everything works exactly the same as with individually hosted
  * plugins.
  */
+#ifdef YABRIDGE_PE_HOST
+// In the PE host this is called from `wWinMain()` below, with the arguments
+// converted to UTF-8
+static int yabridge_main(int argc, char* argv[]) {
+#else
 int YABRIDGE_EXPORT
 #ifdef WINE_USE_CDECL
     __cdecl
 #endif
     main(int argc, char* argv[]) {
+#endif
     // For individually hosted plugins we'll pass along the plugin format, the
     // name of the VST2 plugin .dll file or VST3 bundle to load, the base
     // directory for the Unix domain socket endpoints to connect to and the
@@ -102,8 +108,11 @@ int YABRIDGE_EXPORT
     // The first argument is either a plugin type or 'group', in which case
     // we'll spawn a plugin group host process. In the past this was a separate
     // binary, but they have been merged since they share 95% of the same code.
+    // The native plugin passes Linux paths. The 32-bit PE host needs to convert
+    // those to DOS paths before it can use them. This is a no-op for the
+    // Winelib host.
     if (is_group_host) {
-        const std::string group_socket_endpoint_path(argv[2]);
+        const std::string group_socket_endpoint_path(to_host_path(argv[2]));
 
         try {
             GroupBridge bridge(group_socket_endpoint_path);
@@ -131,8 +140,8 @@ int YABRIDGE_EXPORT
     } else {
         const std::string plugin_type_str(argv[1]);
         const PluginType plugin_type = plugin_type_from_string(plugin_type_str);
-        const std::string plugin_location(argv[2]);
-        const std::string socket_endpoint_path(argv[3]);
+        const std::string plugin_location(to_host_path(argv[2]));
+        const std::string socket_endpoint_path(to_host_path(argv[3]));
         const pid_t parent_pid = std::stoi(argv[4]);
 
         std::cerr << "Preparing to load " << plugin_type_to_string(plugin_type)
@@ -200,7 +209,7 @@ int YABRIDGE_EXPORT
         // potentially unsafe events that should always be run from the UI
         // thread will be posted to `main_context`.
         Win32Thread worker_thread([&]() {
-            pthread_setname_np(pthread_self(), "worker");
+            set_current_thread_name("worker");
 
             bridge->run();
 
@@ -228,4 +237,44 @@ int YABRIDGE_EXPORT
             [&]() { return !bridge->inhibits_event_loop(); });
         main_context.run();
     }
+
+    return 0;
 }
+
+#ifdef YABRIDGE_PE_HOST
+/**
+ * The entry point for the 32-bit PE host. MinGW's `main()` would receive its
+ * arguments in the current ANSI code page, which would break paths containing
+ * characters outside of that code page. So instead we'll convert the UTF-16
+ * command line to UTF-8 ourselves.
+ */
+int WINAPI wWinMain(HINSTANCE /*instance*/,
+                    HINSTANCE /*prev_instance*/,
+                    PWSTR /*command_line*/,
+                    int /*show_command*/) {
+    int argc = 0;
+    LPWSTR* wide_argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!wide_argv) {
+        return 1;
+    }
+
+    std::vector<std::string> args;
+    for (int i = 0; i < argc; i++) {
+        const int size = WideCharToMultiByte(CP_UTF8, 0, wide_argv[i], -1,
+                                             nullptr, 0, nullptr, nullptr);
+        std::string arg(size > 0 ? size - 1 : 0, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, wide_argv[i], -1, arg.data(), size,
+                            nullptr, nullptr);
+        args.push_back(std::move(arg));
+    }
+    LocalFree(wide_argv);
+
+    std::vector<char*> argv;
+    for (auto& arg : args) {
+        argv.push_back(arg.data());
+    }
+    argv.push_back(nullptr);
+
+    return yabridge_main(argc, argv.data());
+}
+#endif

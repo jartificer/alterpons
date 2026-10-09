@@ -16,11 +16,35 @@ project(
 # Build options
 #
 
+# yabridge can be built in two configurations:
+#
+# - The regular configuration, using `cross-wine.conf`. This builds the native
+#   plugin libraries, the chainloaders, and the 64-bit Winelib plugin host
+#   (`yabridge-host.exe`).
+# - The PE host configuration, using `cross-mingw-i686.conf`. This only builds
+#   the 32-bit plugin host (`yabridge-host-32.exe`) as a regular 32-bit Windows
+#   executable using MinGW-w64. In the past this was a 32-bit Winelib
+#   application, but Wine's new WoW64 mode (which is what Arch Linux' `wine` and
+#   `wine-staging` packages use) no longer supports 32-bit Winelib
+#   applications since there is no 32-bit Linux side to Wine anymore. A regular
+#   Windows executable works with both new and old style WoW64 Wine builds.
+#
+# Meson cannot build for multiple cross compilers in a single build directory,
+# so these two configurations need separate build directories. Both binaries
+# should end up in the same directory, see the readme for instructions.
+is_pe_host_build = host_machine.system() == 'windows'
+
 # In theory yabridge should compile fine on a 32-bit system, but you will always
 # need to pass `-Dbitbridge=true`. We just make sure that we won't build
 # any 64-bit binaries in that situation.
 is_64bit_system = build_machine.cpu_family() not in ['x86', 'arm']
 with_bitbridge = get_option('bitbridge')
+if with_bitbridge and not is_pe_host_build
+  message('The 32-bit plugin host (yabridge-host-32.exe) is now a regular ' +
+          'Windows executable that needs to be built in a separate build ' +
+          'directory using cross-mingw-i686.conf. See the readme for more ' +
+          'information.')
+endif
 with_clap = get_option('clap')
 with_winedbg = get_option('winedbg')
 with_vst3 = get_option('vst3')
@@ -96,8 +120,38 @@ wine_compiler_options = [
 # NOTE: GCC doesn't 8-byte align doubles in structs on x86 for ABI-compatibilty
 #       reasons, but MSVC++ does. We need to force this same alignment to be
 #       ABI-compatible with 32-bit binaries created with MSVC++ on Windows.
-wine_32bit_compiler_options = wine_compiler_options + ['-m32', '-malign-double']
 wine_64bit_compiler_options = wine_compiler_options + ['-m64']
+
+# These are used for the 32-bit plugin host when it's built as a regular
+# Windows executable with MinGW. MinGW already uses the same struct layout
+# rules as MSVC, so we don't need `-malign-double` here.
+pe_host_compiler_options = [
+  '-DYABRIDGE_PE_HOST',
+  '-DNOMINMAX',
+  # Asio requires `winsock2.h` to be included before `windows.h`, and a lot of
+  # files include `windows.h` directly
+  '-include',
+  'winsock2.h',
+  # Asio needs this to enable some newer Winsock functionality
+  '-D_WIN32_WINNT=0x0A00',
+  '-DWINVER=0x0A00',
+  # Windows only guarantees 4-byte stack alignment on x86, but GCC assumes
+  # 16-byte alignment for SSE code. Plugins call back into the host, so we
+  # can't make any assumptions about the stack alignment.
+  '-mstackrealign',
+  # `__attribute__((visibility))` does not exist for PE targets
+  '-Wno-attributes',
+  '-Wno-ignored-attributes',
+]
+pe_host_link_args = [
+  # Statically link the C++ standard library, libgcc, and winpthreads so we
+  # don't need to ship their DLLs alongside the host
+  '-static',
+  '-static-libgcc',
+  '-static-libstdc++',
+  '-mwindows',
+  '-municode',
+]
 
 # Enable addition assertions on the STL containers during debug builds. Meson
 # has a `cpp_debugstl` option, but it's nicer having this automatically tied to
@@ -127,6 +181,20 @@ endif
 #
 # Wine checks
 #
+
+if is_pe_host_build
+  # The PE host is built with a regular MinGW compiler, so none of the Winelib
+  # checks below apply
+  if host_machine.cpu_family() != 'x86'
+    error('The PE plugin host should be built as a 32-bit (i686) executable')
+  endif
+  mingw_check = '''#ifndef __MINGW32__
+#error 1
+#endif'''
+  if not meson.get_compiler('cpp').compiles(mingw_check)
+    error('The PE plugin host needs to be built using MinGW-w64, check the README for compilation instructions.')
+  endif
+else
 
 # Meson does not let us set a default cross compiler, which makes sense, but it
 # also means that it's easy to forget. This will cause the setup process to
@@ -197,6 +265,7 @@ if wine_version.returncode() == 0
 else
   warning('Unable to determine the current Wine version')
 endif
+endif  # is_pe_host_build
 
 #
 # Dependencies
@@ -214,11 +283,13 @@ include_dir = include_directories('src/include', is_system : true)
 # to properly do this, please let me know!
 winegcc = meson.get_compiler('cpp', native : false)
 
-if is_64bit_system
+if is_pe_host_build
+  # The PE host contains its own minimal implementation of the parts of libxcb
+  # we need (see `src/wine-host/xcb-pe/`), but it uses libxcb's headers for
+  # the protocol definitions
+  xcb_headers_dep = dependency('xcb', native : true)
+elif is_64bit_system
   xcb_64bit_dep = dependency('xcb')
-endif
-if with_bitbridge
-  xcb_32bit_dep = winegcc.find_library('xcb')
 endif
 
 # These are all headers-only libraries, and thus won't require separate 32-bit
@@ -239,7 +310,9 @@ endif
 
 # The D-Bus headers are also only accessed through the include path. We don't
 # link to libdbus-1 to make soname changes don't completely break yabridge.
-dbus_dep = dependency('dbus-1').partial_dependency(compile_args : true, includes : true)
+if not is_pe_host_build
+  dbus_dep = dependency('dbus-1').partial_dependency(compile_args : true, includes : true)
+endif
 function2_dep = dependency('function2', version : '>=4.0.0')
 ghc_filesystem_dep = dependency('ghc_filesystem', modules : 'ghcFilesystem::ghc_filesystem', version : '>=1.5.0')
 threads_dep = dependency('threads')
@@ -252,6 +325,11 @@ dl_dep = declare_dependency(link_args : '-ldl')
 rt_dep = declare_dependency(link_args : '-lrt')
 
 wine_ole32_dep = declare_dependency(link_args : '-lole32')
+# These are only needed for the PE host, Winelib links to most of these by
+# default
+pe_host_system_libs_dep = declare_dependency(
+  link_args : ['-lws2_32', '-lmswsock', '-luser32', '-lgdi32', '-ladvapi32', '-lole32', '-loleaut32'],
+)
 # The SDK includes a comment pragma that would link to this on MSVC
 wine_shell32_dep = declare_dependency(link_args : '-lshell32')
 # The built in threads dependency does not know how to handle winegcc
@@ -290,9 +368,23 @@ subdir('src/common/config')
 # directory and it's much more convenient having all of the important files
 # directory under `build/`.
 # https://github.com/mesonbuild/meson/pull/4037
-subdir('src/chainloader')
-subdir('src/plugin')
+if not is_pe_host_build
+  subdir('src/chainloader')
+  subdir('src/plugin')
+endif
 subdir('src/wine-host')
+
+if is_pe_host_build
+  executable(
+    host_name_32bit,
+    host_sources,
+    native : false,
+    include_directories : [include_dir, pe_host_include_dir],
+    dependencies : host_32bit_deps,
+    cpp_args : compiler_options + pe_host_compiler_options,
+    link_args : pe_host_link_args,
+  )
+else
 
 shared_library(
   vst2_plugin_name,
@@ -371,15 +463,4 @@ if is_64bit_system
     link_args : ['-m64'],
   )
 endif
-
-if with_bitbridge
-  executable(
-    host_name_32bit,
-    host_sources,
-    native : false,
-    include_directories : include_dir,
-    dependencies : host_32bit_deps,
-    cpp_args : compiler_options + wine_32bit_compiler_options,
-    link_args : ['-m32'],
-  )
-endif
+endif  # is_pe_host_build

@@ -23,6 +23,12 @@
 // it's running under a WIN32 environment. If anyone knows a better way to do
 // this, please let me know!
 
+// The 32-bit PE host is a regular Windows application, so there Asio should
+// just use its Windows backend
+#ifdef YABRIDGE_PE_HOST
+#include <asio/basic_socket_streambuf.hpp>
+#else
+
 #pragma push_macro("WIN32")
 #pragma push_macro("_WIN32")
 #pragma push_macro("__WIN32__")
@@ -45,3 +51,5 @@
 #pragma pop_macro("_WIN32")
 #pragma pop_macro("__WIN32__")
 #pragma pop_macro("_WIN64")
+
+#endif  // YABRIDGE_PE_HOST

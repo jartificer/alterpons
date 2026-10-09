@@ -23,15 +23,34 @@
 #include <function2/function2.hpp>
 
 // Use the native version of xcb
+#ifdef YABRIDGE_PE_HOST
+// The PE host uses its own minimal libxcb implementation, see
+// `xcb-pe/xcb-pe.h`
+#include "xcb-pe/xcb-pe.h"
+#else
 #pragma push_macro("_WIN32")
 #undef _WIN32
 #include <xcb/xcb.h>
 #pragma pop_macro("_WIN32")
+#endif
 
 #include "../common/configuration.h"
 #include "../common/logging/common.h"
 #include "utils.h"
 #include "xdnd-proxy.h"
+
+#ifndef YABRIDGE_PE_HOST
+/**
+ * The 32-bit PE host connects to the X11 server through a relay in the native
+ * plugin, and this is used to select the plugin's relay there. See
+ * `xcb-pe/xcb-pe.h`. The Winelib host can connect to the X11 server directly,
+ * so this does nothing there.
+ */
+class ScopedX11Relay {
+   public:
+    explicit ScopedX11Relay(const std::string& /*endpoint_base_dir*/) {}
+};
+#endif
 
 /**
  * The most significant bit in an X11 event's response type is used to indicate

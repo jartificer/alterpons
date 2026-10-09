@@ -64,15 +64,16 @@ class Vst3Sockets final : public Sockets {
      */
     Vst3Sockets(asio::io_context& io_context,
                 const ghc::filesystem::path& endpoint_base_dir,
-                bool listen)
-        : Sockets(endpoint_base_dir),
+                bool listen,
+                SocketTransport transport = default_socket_transport)
+        : Sockets(endpoint_base_dir, transport),
           host_plugin_control_(
               io_context,
-              (base_dir_ / "host_plugin_control.sock").string(),
+              endpoint("host_plugin_control.sock"),
               listen),
           plugin_host_callback_(
               io_context,
-              (base_dir_ / "plugin_host_callback.sock").string(),
+              endpoint("plugin_host_callback.sock"),
               listen),
           io_context_(io_context) {}
 
@@ -108,9 +109,8 @@ class Vst3Sockets final : public Sockets {
         std::lock_guard lock(audio_processor_sockets_mutex_);
         audio_processor_sockets_.try_emplace(
             instance_id, io_context_,
-            (base_dir_ / ("host_plugin_audio_processor_" +
-                          std::to_string(instance_id) + ".sock"))
-                .string(),
+            endpoint("host_plugin_audio_processor_" +
+                          std::to_string(instance_id) + ".sock"),
             false);
 
         audio_processor_sockets_.at(instance_id).connect();
@@ -142,9 +142,8 @@ class Vst3Sockets final : public Sockets {
             std::lock_guard lock(audio_processor_sockets_mutex_);
             audio_processor_sockets_.try_emplace(
                 instance_id, io_context_,
-                (base_dir_ / ("host_plugin_audio_processor_" +
-                              std::to_string(instance_id) + ".sock"))
-                    .string(),
+                endpoint("host_plugin_audio_processor_" +
+                              std::to_string(instance_id) + ".sock"),
                 true);
         }
 

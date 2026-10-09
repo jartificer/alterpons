@@ -16,7 +16,9 @@
 
 #include "configuration.h"
 
+#ifndef YABRIDGE_PE_HOST
 #include <fnmatch.h>
+#endif
 #include <fstream>
 
 #include "toml++.h"
@@ -26,6 +28,9 @@ namespace fs = ghc::filesystem;
 
 Configuration::Configuration() noexcept {}
 
+// Configuration files are only parsed on the native plugin side. The Wine
+// plugin host receives the parsed configuration from the native plugin.
+#ifndef YABRIDGE_PE_HOST
 Configuration::Configuration(const fs::path& config_path,
                              const fs::path& yabridge_path)
     : Configuration() {
@@ -140,6 +145,7 @@ Configuration::Configuration(const fs::path& config_path,
         break;
     }
 }
+#endif  // YABRIDGE_PE_HOST
 
 std::chrono::steady_clock::duration Configuration::event_loop_interval()
     const noexcept {

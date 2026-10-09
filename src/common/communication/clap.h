@@ -47,26 +47,33 @@ class ClapAudioThreadSockets {
      * @param listen If `true`, start listening on the sockets. Incoming
      *   connections will be accepted when `connect()` gets called. This should
      *   be set to `true` on the plugin side, and `false` on the Wine host side.
+     * @param transport The transport to use for the sockets.
      *
      * @see ClapSockets::connect
      */
     ClapAudioThreadSockets(asio::io_context& io_context,
                            const ghc::filesystem::path& endpoint_base_dir,
                            size_t instance_id,
-                           bool listen)
+                           bool listen,
+                           SocketTransport transport)
         : control_(io_context,
-                   (endpoint_base_dir / ("host_plugin_audio_thread_control_" +
-                                         std::to_string(instance_id) + ".sock"))
-                       .string(),
+                   SocketEndpoint(
+                       (endpoint_base_dir /
+                        ("host_plugin_audio_thread_control_" +
+                         std::to_string(instance_id) + ".sock"))
+                           .string(),
+                       transport),
                    // The Wine side will end up listening for control messages
                    !listen),
-          callback_(
-              io_context,
-              (endpoint_base_dir / ("plugin_host_audio_thread_callback_" +
-                                    std::to_string(instance_id) + ".sock"))
-                  .string(),
-              // And the plugin side for callbacks
-              listen) {}
+          callback_(io_context,
+                    SocketEndpoint(
+                        (endpoint_base_dir /
+                         ("plugin_host_audio_thread_callback_" +
+                          std::to_string(instance_id) + ".sock"))
+                            .string(),
+                        transport),
+                    // And the plugin side for callbacks
+                    listen) {}
 
     void connect() {
         control_.connect();
@@ -133,15 +140,16 @@ class ClapSockets final : public Sockets {
      */
     ClapSockets(asio::io_context& io_context,
                 const ghc::filesystem::path& endpoint_base_dir,
-                bool listen)
-        : Sockets(endpoint_base_dir),
+                bool listen,
+                SocketTransport transport = default_socket_transport)
+        : Sockets(endpoint_base_dir, transport),
           host_plugin_main_thread_control_(
               io_context,
-              (base_dir_ / "host_plugin_main_thread_control.sock").string(),
+              endpoint("host_plugin_main_thread_control.sock"),
               listen),
           plugin_host_main_thread_callback_(
               io_context,
-              (base_dir_ / "plugin_host_main_thread_callback.sock").string(),
+              endpoint("plugin_host_main_thread_callback.sock"),
               listen),
           io_context_(io_context) {}
 
@@ -197,7 +205,8 @@ class ClapSockets final : public Sockets {
             // native plugin will connect to the sockets and everything will
             // continue.
             audio_thread_sockets_.try_emplace(instance_id, io_context_,
-                                              base_dir_, instance_id, false);
+                                              base_dir_, instance_id, false,
+                                              transport_);
         }
 
         // We're blocking for a connection here, so the latch must be unlocked
@@ -242,7 +251,8 @@ class ClapSockets final : public Sockets {
         {
             std::lock_guard lock(audio_thread_sockets_mutex_);
             audio_thread_sockets_.try_emplace(instance_id, io_context_,
-                                              base_dir_, instance_id, true);
+                                              base_dir_, instance_id, true,
+                                              transport_);
         }
 
         // This is called on the native plugin side after the Wine side is

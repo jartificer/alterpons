@@ -31,6 +31,11 @@ Process::Handle HostProcess::launch_host(
     Logger& logger,
     const Configuration& config,
     const PluginInfo& plugin_info) {
+    // The 32-bit host is a regular Windows executable that has to be launched
+    // through Wine, while the 64-bit host is a Winelib application that can be
+    // executed directly
+    const bool launch_through_wine = is_pe_host(plugin_info.plugin_arch_);
+
 #ifdef WITH_WINEDBG
     // This is set up for KDE Plasma. Other desktop environments and window
     // managers require some slight modifications to spawn a detached terminal
@@ -39,16 +44,21 @@ Process::Handle HostProcess::launch_host(
     // terminal.
     Process child("kstart5");
     child.arg("konsole").arg("--").arg("-e").arg("winedbg").arg("--gdb");
+    const std::string winedbg_target =
+        launch_through_wine ? host_path.string() : host_path.string() + ".so";
 #ifdef WINEDBG_LEGACY_ARGUMENT_QUOTING
     // Note the double quoting here. Old versions of winedbg didn't
     // respect `argv` and instead expected a pre-quoted Win32 command
     // line as its arguments.
-    child.arg("\"" + host_path.string() + ".so\""),
+    child.arg("\"" + winedbg_target + "\""),
 #else
-    child.arg(host_path.string() + ".so");
+    child.arg(winedbg_target);
 #endif  // WINEDBG_LEGACY_ARGUMENT_QUOTING
 #else
-    Process child(host_path);
+    Process child(launch_through_wine ? get_wine_loader() : host_path.string());
+    if (launch_through_wine) {
+        child.arg(host_path.string());
+    }
 #endif  // WITH_WINEDBG
 
         // What's up with this indentation
@@ -60,10 +70,13 @@ Process::Handle HostProcess::launch_host(
     Process::Handle child_handle = std::visit(
         overload{
             [](Process::Handle handle) -> Process::Handle { return handle; },
-            [&host_path](const Process::CommandNotFound&) -> Process::Handle {
-                throw std::runtime_error("Could not launch '" +
-                                         host_path.string() +
-                                         "', command not found");
+            [&](const Process::CommandNotFound&) -> Process::Handle {
+                throw std::runtime_error(
+                    "Could not launch '" +
+                    (launch_through_wine ? get_wine_loader() + "' to run '" +
+                                               host_path.string()
+                                         : host_path.string()) +
+                    "', command not found");
             },
             [](const std::error_code& err) -> Process::Handle {
                 throw std::runtime_error("Error spawning Wine process: " +
@@ -182,10 +195,12 @@ GroupHost::GroupHost(asio::io_context& io_context,
     const fs::path group_socket_path = generate_group_endpoint(
         *config.group, plugin_info.normalize_wine_prefix(),
         plugin_info.plugin_arch_);
-    const auto connect = [&io_context, host_request, endpoint_base_dir,
-                          group_socket_path]() {
-        asio::local::stream_protocol::socket group_socket(io_context);
-        group_socket.connect(group_socket_path.string());
+    const SocketEndpoint group_endpoint(
+        group_socket_path.string(),
+        socket_transport_for(plugin_info.plugin_arch_));
+    const auto connect = [&io_context, host_request, group_endpoint]() {
+        Socket group_socket(io_context);
+        group_endpoint.connect(group_socket);
 
         write_object(group_socket, host_request);
         const auto response = read_object<HostResponse>(group_socket);

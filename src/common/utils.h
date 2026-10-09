@@ -18,7 +18,9 @@
 
 #include <optional>
 
+#ifndef YABRIDGE_PE_HOST
 #include <sys/resource.h>
+#endif
 #include <ghc/filesystem.hpp>
 
 #define YABRIDGE_EXPORT __attribute__((visibility("default")))
@@ -116,6 +118,7 @@ bool set_realtime_priority(bool sched_fifo, int priority = 5) noexcept;
  * no limit. If there was some error fetching this value, then a nullopt will be
  * returned.
  */
+#ifndef YABRIDGE_PE_HOST
 std::optional<rlim_t> get_memlock_limit() noexcept;
 
 /**
@@ -129,6 +132,29 @@ std::optional<rlim_t> get_memlock_limit() noexcept;
  * time limit with some low value.
  */
 std::optional<rlim_t> get_rttime_limit() noexcept;
+#endif
+
+/**
+ * Give the calling thread a name, for use in debuggers and tools like `htop`.
+ * This uses `pthread_setname_np()` on Linux and in the Winelib host, and
+ * `SetThreadDescription()` in the 32-bit (PE) Wine plugin host.
+ */
+void set_current_thread_name(const char* name) noexcept;
+
+/**
+ * The current process' ID. In the 32-bit (PE) Wine plugin host this is the
+ * Windows process ID.
+ */
+int get_current_pid() noexcept;
+
+/**
+ * Convert a path received from the native plugin to a path the Wine plugin host
+ * can use. The native plugin always sends Linux paths. The Winelib host can use
+ * those directly, but the 32-bit (PE) host needs to convert those to DOS paths
+ * first using `wine_get_dos_file_name()`. On the native side this returns the
+ * path as is.
+ */
+std::string to_host_path(const std::string& path);
 
 /**
  * Returns `true` if `YABRIDGE_NO_WATCHDOG` is set to `1`. In that case we will

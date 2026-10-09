@@ -2,7 +2,7 @@
 # to keep all relevant files in the root of the build directory, and Meson
 # doesn't have a way to customize that yet.
 
-if is_64bit_system
+if is_64bit_system and not is_pe_host_build
   host_64bit_deps = [
     configuration_dep,
 
@@ -28,8 +28,13 @@ if is_64bit_system
   endif
 endif
 
-if with_bitbridge
-  message('Bitbridge enabled, configuring a 32-bit host application')
+if is_pe_host_build
+  message('Configuring the 32-bit PE plugin host')
+
+  # We use libxcb's headers for the X11 protocol definitions in our own minimal
+  # libxcb implementation. See `xcb-pe/xcb/meson.build`.
+  subdir('xcb-pe/xcb')
+  pe_host_include_dir = include_directories('xcb-pe')
 
   host_32bit_deps = [
     configuration_dep,
@@ -38,11 +43,9 @@ if with_bitbridge
     ghc_filesystem_dep,
     bitsery_dep,
     function2_dep,
-    rt_dep,
+    pe_host_system_libs_dep,
     tomlplusplus_dep,
     wine_ole32_dep,
-    wine_threads_dep,
-    xcb_32bit_dep,
   ]
   if with_clap
     host_32bit_deps += [clap_dep]
@@ -57,6 +60,7 @@ if with_bitbridge
 endif
 
 host_sources = files(
+  '../common/communication/transport.cpp',
   '../common/communication/vst2.cpp',
   '../common/serialization/vst2.cpp',
   '../common/configuration.cpp',
@@ -64,7 +68,6 @@ host_sources = files(
   '../common/logging/vst2.cpp',
   '../common/audio-shm.cpp',
   '../common/plugins.cpp',
-  '../common/process.cpp',
   '../common/utils.cpp',
   '../include/llvm/small-vector.cpp',
   'bridges/common.cpp',
@@ -75,6 +78,17 @@ host_sources = files(
   'utils.cpp',
   'xdnd-proxy.cpp',
 )
+
+if is_pe_host_build
+  host_sources += files(
+    'pe-compat.cpp',
+    'xcb-pe/xcb-pe.cpp',
+  )
+else
+  host_sources += files(
+    '../common/process.cpp',
+  )
+endif
 
 if with_clap
   host_sources += files(

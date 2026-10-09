@@ -600,6 +600,8 @@ void ClapBridge::run() {
                     [&, plugin = instance.plugin.get(),
                      gui = instance.extensions.gui,
                      &editor = instance.editor]() {
+                        const ScopedX11Relay x11_relay(
+                            sockets_.base_dir_.string());
                         Editor& editor_instance =
                             editor.emplace(main_context_, config_,
                                            generic_logger_, request.x11_window);
@@ -1070,7 +1072,7 @@ void ClapBridge::register_plugin_instance(
         //      deal probably, since duplicate thread names are still more
         //      useful than no thread names.
         const std::string thread_name = "audio-" + std::to_string(instance_id);
-        pthread_setname_np(pthread_self(), thread_name.c_str());
+        set_current_thread_name(thread_name.c_str());
 
         sockets_.add_audio_thread_and_listen_control(
             instance_id, socket_listening_latch,

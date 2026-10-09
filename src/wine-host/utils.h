@@ -29,6 +29,9 @@
 #include <function2/function2.hpp>
 
 #include "../common/utils.h"
+#ifdef YABRIDGE_PE_HOST
+#include "pe-compat.h"
+#endif
 
 // Forward declaration for use in our watchdog in `MainContext`
 class HostBridge;

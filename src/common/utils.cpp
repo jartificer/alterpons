@@ -18,8 +18,17 @@
 
 #include <stdlib.h>
 
-#include <sched.h>
 #include <xmmintrin.h>
+
+#ifdef YABRIDGE_PE_HOST
+#include <windows.h>
+
+#include "../wine-host/pe-compat.h"
+#else
+#include <pthread.h>
+#include <sched.h>
+#include <unistd.h>
+#endif
 
 namespace fs = ghc::filesystem;
 
@@ -42,15 +51,62 @@ constexpr char temp_dir_override_env_var[] = "YABRIDGE_TEMP_DIR";
 fs::path get_temporary_directory() {
     // NOLINTNEXTLINE(concurrency-mt-unsafe)
     if (const auto directory = getenv(temp_dir_override_env_var)) {
-        return fs::path(directory);
+        return fs::path(to_host_path(directory));
         // NOLINTNEXTLINE(concurrency-mt-unsafe)
     } else if (const auto directory = getenv("XDG_RUNTIME_DIR")) {
-        return fs::path(directory);
+        return fs::path(to_host_path(directory));
     } else {
+#ifdef YABRIDGE_PE_HOST
+        // This would return Windows' temporary directory otherwise
+        return fs::path(to_host_path("/tmp"));
+#else
         return fs::temp_directory_path();
+#endif
     }
 }
 
+#ifdef YABRIDGE_PE_HOST
+std::optional<int> get_realtime_priority() noexcept {
+    return linux_get_thread_realtime_priority();
+}
+
+bool set_realtime_priority(bool sched_fifo, int priority) noexcept {
+    // Wine only maps Windows thread priorities to nice values, so we'll set
+    // the scheduling policy ourselves using a raw Linux system call. The
+    // Windows thread priority is set as well, both as a fallback and so that
+    // Wine's own bookkeeping reflects this.
+    SetThreadPriority(GetCurrentThread(), sched_fifo
+                                              ? THREAD_PRIORITY_TIME_CRITICAL
+                                              : THREAD_PRIORITY_NORMAL);
+
+    return linux_set_thread_realtime(sched_fifo, priority);
+}
+
+void set_current_thread_name(const char* name) noexcept {
+    // `SetThreadDescription()` was added in Windows 10, so MinGW may not have
+    // an import for it
+    using SetThreadDescription_t = HRESULT(WINAPI*)(HANDLE, PCWSTR);
+    static const auto set_thread_description =
+        reinterpret_cast<SetThreadDescription_t>(reinterpret_cast<void*>(
+            GetProcAddress(GetModuleHandleW(L"kernel32.dll"),
+                           "SetThreadDescription")));
+    if (!set_thread_description) {
+        return;
+    }
+
+    wchar_t wide_name[64] = {};
+    MultiByteToWideChar(CP_UTF8, 0, name, -1, wide_name, 63);
+    set_thread_description(GetCurrentThread(), wide_name);
+}
+
+int get_current_pid() noexcept {
+    return static_cast<int>(GetCurrentProcessId());
+}
+
+std::string to_host_path(const std::string& path) {
+    return unix_path_to_dos_path(path);
+}
+#else
 std::optional<int> get_realtime_priority() noexcept {
     sched_param current_params{};
     if (sched_getparam(0, &current_params) == 0 &&
@@ -67,6 +123,20 @@ bool set_realtime_priority(bool sched_fifo, int priority) noexcept {
                               &params) == 0;
 }
 
+void set_current_thread_name(const char* name) noexcept {
+    pthread_setname_np(pthread_self(), name);
+}
+
+int get_current_pid() noexcept {
+    return getpid();
+}
+
+std::string to_host_path(const std::string& path) {
+    return path;
+}
+#endif
+
+#ifndef YABRIDGE_PE_HOST
 std::optional<rlim_t> get_memlock_limit() noexcept {
     rlimit limits{};
     if (getrlimit(RLIMIT_MEMLOCK, &limits) == 0) {
@@ -84,6 +154,7 @@ std::optional<rlim_t> get_rttime_limit() noexcept {
         return std::nullopt;
     }
 }
+#endif
 
 bool is_watchdog_timer_disabled() {
     // This is safe because we're not storing the pointer anywhere and the

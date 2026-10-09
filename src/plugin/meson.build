@@ -51,6 +51,7 @@ endif
 
 vst2_plugin_sources = files(
   '../common/communication/common.cpp',
+  '../common/communication/transport.cpp',
   '../common/communication/vst2.cpp',
   '../common/serialization/vst2.cpp',
   '../common/configuration.cpp',
@@ -65,6 +66,7 @@ vst2_plugin_sources = files(
   '../include/llvm/small-vector.cpp',
   'bridges/vst2.cpp',
   'host-process.cpp',
+  'x11-relay.cpp',
   'utils.cpp',
   'vst2-plugin.cpp',
 )
@@ -72,6 +74,7 @@ vst2_plugin_sources = files(
 if with_clap
   clap_plugin_sources = files(
     '../common/communication/common.cpp',
+  '../common/communication/transport.cpp',
     '../common/configuration.cpp',
     '../common/logging/clap.cpp',
     '../common/logging/common.cpp',
@@ -96,6 +99,7 @@ if with_clap
     'bridges/clap-impls/plugin-factory-proxy.cpp',
     'bridges/clap.cpp',
     'host-process.cpp',
+    'x11-relay.cpp',
     'utils.cpp',
     'clap-plugin.cpp',
   )
@@ -104,6 +108,7 @@ endif
 if with_vst3
   vst3_plugin_sources = files(
     '../common/communication/common.cpp',
+  '../common/communication/transport.cpp',
     '../common/logging/common.cpp',
     '../common/logging/vst3.cpp',
     '../common/serialization/vst3/component-handler/component-handler.cpp',
@@ -174,6 +179,7 @@ if with_vst3
     'bridges/vst3-impls/plug-view-proxy.cpp',
     'bridges/vst3-impls/plugin-proxy.cpp',
     'host-process.cpp',
+    'x11-relay.cpp',
     'utils.cpp',
     'vst3-plugin.cpp',
   )

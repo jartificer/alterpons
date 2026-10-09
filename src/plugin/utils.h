@@ -18,11 +18,34 @@
 
 #include <variant>
 
+#include "../common/communication/transport.h"
 #include "../common/configuration.h"
 #include "../common/logging/common.h"
 #include "../common/plugins.h"
 #include "../common/process.h"
 #include "../common/utils.h"
+
+/**
+ * The socket transport to use when talking to the Wine plugin host for a plugin
+ * with the specified architecture. The 64-bit host is a Winelib application
+ * that can use Unix domain sockets, while the 32-bit host is a plain Windows
+ * executable that can only use (loopback) TCP sockets. See `SocketTransport`
+ * for more information.
+ */
+SocketTransport socket_transport_for(LibArchitecture plugin_arch) noexcept;
+
+/**
+ * Whether the plugin host for this architecture is a regular Windows (PE)
+ * executable that needs to be launched through `wine`, rather than a Winelib
+ * application that can be executed directly.
+ */
+bool is_pe_host(LibArchitecture plugin_arch) noexcept;
+
+/**
+ * The command used to launch Windows executables. This is `$WINELOADER` if
+ * that's set, or `wine` otherwise.
+ */
+std::string get_wine_loader();
 
 /**
  * Marker struct for when we use the default Wine prefix.

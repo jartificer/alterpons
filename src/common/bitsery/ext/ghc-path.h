@@ -38,9 +38,11 @@ class GhcPath {
 
     template <typename Des, typename Fnc>
     void deserialize(Des& des, ghc::filesystem::path& path, Fnc&&) const {
-        ghc::filesystem::path::string_type path_str{};
+        // Paths are always serialized as UTF-8, even on Windows where the
+        // native string type is a wide string
+        std::string path_str{};
         des.text1b(path_str, 4096);
-        path = path_str;
+        path = ghc::filesystem::path(path_str);
     }
 };
 

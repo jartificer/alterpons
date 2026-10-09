@@ -28,7 +28,7 @@ ClapPluginBridge::ClapPluginBridge(const ghc::filesystem::path& plugin_path)
                   generate_endpoint_base(info.native_library_path_.filename()
                                              .replace_extension("")
                                              .string()),
-                  true);
+                  true, socket_transport_for(info.plugin_arch_));
           }),
       logger_(generic_logger_) {
     log_init_message();

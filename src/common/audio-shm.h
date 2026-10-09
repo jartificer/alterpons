@@ -19,7 +19,11 @@
 #include <string>
 #include <vector>
 
+#ifdef YABRIDGE_PE_HOST
+#include <windows.h>
+#else
 #include <sys/mman.h>
+#endif
 
 /**
  * A shared memory object that allows audio buffers to be shared between the
@@ -198,10 +202,25 @@ class AudioShmBuffer {
      */
     void setup_mapping();
 
+#ifdef YABRIDGE_PE_HOST
+    /**
+     * The 32-bit PE Wine plugin host can't use `shm_open()`. Instead it opens
+     * the same file in `/dev/shm` the native plugin creates through its Unix
+     * path and maps that using a Win32 file mapping. Wine maps writable file
+     * mappings with `MAP_SHARED`, so both sides see the same memory.
+     */
+    HANDLE shm_file_ = INVALID_HANDLE_VALUE;
+    /**
+     * The file mapping object for `shm_file_`. This needs to be recreated when
+     * the buffer is resized.
+     */
+    HANDLE shm_mapping_ = nullptr;
+#else
     /**
      * The file descriptor for our shared memory object.
      */
     int shm_fd_ = 0;
+#endif
     /**
      * A pointer to our mapped shared memory region.
      */

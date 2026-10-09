@@ -20,6 +20,13 @@
 
 #include "../../common/process.h"
 #include "../editor.h"
+#ifdef YABRIDGE_PE_HOST
+#include "../pe-compat.h"
+
+bool pid_running(pid_t pid) {
+    return linux_pid_running(pid);
+}
+#endif
 
 /**
  * The maximum number of Win32 messages to handle per message loop. This is

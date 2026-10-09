@@ -16,9 +16,14 @@
 
 #include "group.h"
 
+#ifdef YABRIDGE_PE_HOST
+#include <fcntl.h>
+#include <io.h>
+#else
 #include "../use-linux-asio.h"
 
 #include <unistd.h>
+#endif
 #include <regex>
 
 #include "../../common/communication/common.h"
@@ -52,15 +57,99 @@ using namespace std::literals::chrono_literals;
  * @throw std::runtime_error If another process is already listening on the
  *        endpoint.
  */
-asio::local::stream_protocol::acceptor create_acceptor_if_inactive(
-    asio::io_context& io_context,
-    asio::local::stream_protocol::endpoint& endpoint);
+SocketAcceptor create_acceptor_if_inactive(asio::io_context& io_context,
+                                           const SocketEndpoint& endpoint);
 
 /**
  * Create a logger prefix containing the group name based on the socket path.
  */
 std::string create_logger_prefix(const fs::path& socket_path);
 
+#ifdef YABRIDGE_PE_HOST
+StdIoCapture::StdIoCapture(int file_descriptor,
+                           Logger& logger,
+                           std::string prefix)
+    : target_fd_(file_descriptor),
+      std_handle_id_(file_descriptor == STDERR_FILENO ? STD_ERROR_HANDLE
+                                                      : STD_OUTPUT_HANDLE),
+      original_std_handle_(GetStdHandle(std_handle_id_)),
+      original_fd_copy_(_dup(file_descriptor)) {
+    HANDLE write_handle = nullptr;
+    if (!CreatePipe(&read_handle_, &write_handle, nullptr, 0)) {
+        std::cerr << "Could not create pipe" << std::endl;
+        throw std::system_error(static_cast<int>(GetLastError()),
+                                std::system_category());
+    }
+
+    // Flush anything that's still buffered before swapping out the stream
+    fflush(file_descriptor == STDERR_FILENO ? stderr : stdout);
+
+    // This takes ownership of `write_handle`. `_dup2()` duplicates the
+    // underlying handle, so we can close the temporary file descriptor
+    // afterwards.
+    const int pipe_fd =
+        _open_osfhandle(reinterpret_cast<intptr_t>(write_handle), _O_WRONLY);
+    _dup2(pipe_fd, target_fd_);
+    _close(pipe_fd);
+    SetStdHandle(std_handle_id_,
+                 reinterpret_cast<HANDLE>(_get_osfhandle(target_fd_)));
+
+    reader_thread_ = Win32Thread([this, &logger, prefix = std::move(prefix)]() {
+        set_current_thread_name("group-stdio");
+
+        // Plugins may keep their own copies of the pipe's write handle, so we
+        // can't rely on ever reaching the end of the stream. Instead we'll
+        // poll the pipe so we can stop reading when this object gets dropped.
+        std::string line_buffer;
+        std::array<char, 4096> read_buffer{};
+        while (!stop_reading_) {
+            DWORD bytes_available = 0;
+            if (!PeekNamedPipe(read_handle_, nullptr, 0, nullptr,
+                               &bytes_available, nullptr)) {
+                break;
+            }
+            if (bytes_available == 0) {
+                Sleep(10);
+                continue;
+            }
+
+            DWORD bytes_read = 0;
+            if (!ReadFile(read_handle_, read_buffer.data(),
+                          std::min<DWORD>(bytes_available, read_buffer.size()),
+                          &bytes_read, nullptr)) {
+                break;
+            }
+
+            line_buffer.append(read_buffer.data(), bytes_read);
+            size_t newline_pos;
+            while ((newline_pos = line_buffer.find('\n')) !=
+                   std::string::npos) {
+                std::string line = line_buffer.substr(0, newline_pos);
+                if (!line.empty() && line.back() == '\r') {
+                    line.pop_back();
+                }
+
+                logger.log(prefix + line);
+                line_buffer.erase(0, newline_pos + 1);
+            }
+        }
+    });
+}
+
+StdIoCapture::~StdIoCapture() noexcept {
+    fflush(target_fd_ == STDERR_FILENO ? stderr : stdout);
+
+    // Restore the original handles. This also closes our copy of the pipe's
+    // write handle.
+    _dup2(original_fd_copy_, target_fd_);
+    _close(original_fd_copy_);
+    SetStdHandle(std_handle_id_, original_std_handle_);
+
+    stop_reading_ = true;
+    reader_thread_ = Win32Thread();
+    CloseHandle(read_handle_);
+}
+#else
 StdIoCapture::StdIoCapture(asio::io_context& io_context, int file_descriptor)
     : pipe_(io_context),
       target_fd_(file_descriptor),
@@ -87,19 +176,26 @@ StdIoCapture::~StdIoCapture() noexcept {
     close(original_fd_copy_);
     close(pipe_fd_[0]);
 }
+#endif  // YABRIDGE_PE_HOST
 
 GroupBridge::GroupBridge(ghc::filesystem::path group_socket_path)
     : logger_(Logger::create_from_environment(
           create_logger_prefix(group_socket_path))),
       main_context_(),
       stdio_context_(),
+#ifdef YABRIDGE_PE_HOST
+      stdout_redirect_(STDOUT_FILENO, logger_, "[STDOUT] "),
+      stderr_redirect_(STDERR_FILENO, logger_, "[STDERR] "),
+#else
       stdout_redirect_(stdio_context_, STDOUT_FILENO),
       stderr_redirect_(stdio_context_, STDERR_FILENO),
+#endif
       group_socket_endpoint_(group_socket_path.string()),
       group_socket_acceptor_(
           create_acceptor_if_inactive(main_context_.context_,
                                       group_socket_endpoint_)),
       shutdown_timer_(main_context_.context_) {
+#ifndef YABRIDGE_PE_HOST
     // Write this process's original STDOUT and STDERR streams to the logger
     logger_.async_log_pipe_lines(stdout_redirect_.pipe_, stdout_buffer_,
                                  "[STDOUT] ");
@@ -107,17 +203,18 @@ GroupBridge::GroupBridge(ghc::filesystem::path group_socket_path)
                                  "[STDERR] ");
 
     stdio_handler_ = Win32Thread([&]() {
-        pthread_setname_np(pthread_self(), "group-stdio");
+        set_current_thread_name("group-stdio");
 
         stdio_context_.run();
     });
+#endif
 }
 
 GroupBridge::~GroupBridge() noexcept {
     // Our fancy `Vst2Sockets` and `Vst3Sockets` clean up after themselves, but
     // here we need to do it manually
     // TODO: Encapsulate this, destructors are evil
-    fs::remove(group_socket_endpoint_.path());
+    group_socket_endpoint_.remove();
 
     stdio_context_.stop();
 }
@@ -179,8 +276,7 @@ void GroupBridge::handle_incoming_connections() {
 
 void GroupBridge::accept_requests() {
     group_socket_acceptor_.async_accept(
-        [&](const std::error_code& error,
-            asio::local::stream_protocol::socket socket) {
+        [&](const std::error_code& error, Socket socket) {
             std::lock_guard lock(active_plugins_mutex_);
 
             // Stop the whole process when the socket gets closed unexpectedly
@@ -197,8 +293,23 @@ void GroupBridge::accept_requests() {
             // yabridge plugin will be able to tell if the plugin has caused
             // this process to crash during its initialization to prevent
             // waiting indefinitely on the sockets to be connected to.
-            const auto request = read_object<HostRequest>(socket);
-            write_object(socket, HostResponse{.pid = getpid()});
+            // With TCP sockets the other side first has to authenticate
+            // itself
+            try {
+                group_socket_endpoint_.finish_accept(socket);
+            } catch (const std::system_error& error) {
+                logger_.log("Dropping connection: " +
+                            std::string(error.what()));
+                accept_requests();
+                return;
+            }
+
+            auto request = read_object<HostRequest>(socket);
+            write_object(socket, HostResponse{.pid = get_current_pid()});
+
+            // The native plugin sends us Linux paths
+            request.plugin_path = to_host_path(request.plugin_path);
+            request.endpoint_base_dir = to_host_path(request.endpoint_base_dir);
 
             // The plugin has to be initiated on the IO context's thread because
             // this has to be done on the same thread that's handling messages,
@@ -268,7 +379,7 @@ void GroupBridge::accept_requests() {
                     Win32Thread([this, plugin_id, plugin_ptr = bridge.get()]() {
                         const std::string thread_name =
                             "worker-" + std::to_string(plugin_id);
-                        pthread_setname_np(pthread_self(), thread_name.c_str());
+                        set_current_thread_name(thread_name.c_str());
 
                         handle_plugin_run(plugin_id, plugin_ptr);
                     }),
@@ -303,18 +414,40 @@ void GroupBridge::async_handle_events() {
         [&]() { return !is_event_loop_inhibited(); });
 }
 
-asio::local::stream_protocol::acceptor create_acceptor_if_inactive(
-    asio::io_context& io_context,
-    asio::local::stream_protocol::endpoint& endpoint) {
+SocketAcceptor create_acceptor_if_inactive(asio::io_context& io_context,
+                                           const SocketEndpoint& endpoint) {
+#ifdef YABRIDGE_PE_HOST
+    // With TCP sockets we can't detect stale endpoints by looking at whether
+    // the endpoint is still in use, since another (unrelated) process may have
+    // reused a stale port. Instead, the process that hosts the group holds an
+    // exclusive handle to a lock file for as long as it's running. Wine
+    // enforces Win32 sharing modes across processes, and the handle gets closed
+    // automatically when this process exits.
+    static HANDLE lock_handle = INVALID_HANDLE_VALUE;
+    if (lock_handle == INVALID_HANDLE_VALUE) {
+        const std::wstring lock_path =
+            fs::path(endpoint.path() + ".lock").wstring();
+        lock_handle =
+            CreateFileW(lock_path.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (lock_handle == INVALID_HANDLE_VALUE) {
+            throw std::system_error(
+                std::make_error_code(std::errc::address_in_use),
+                "Could not lock '" + endpoint.path() + ".lock'");
+        }
+    }
+
+    return endpoint.listen(io_context);
+#else
     // First try to listen on the endpoint normally
     try {
-        return asio::local::stream_protocol::acceptor(io_context, endpoint);
+        return endpoint.listen(io_context);
     } catch (const std::system_error&) {
         // If this failed, then either there is a stale socket file or another
         // process is already is already listening. In the last case we will
         // simply throw so the other process can handle the request.
         std::ifstream open_sockets("/proc/net/unix");
-        const std::string endpoint_path = endpoint.path();
+        const std::string& endpoint_path = endpoint.path();
         for (std::string line; std::getline(open_sockets, line);) {
             if (line.size() < endpoint_path.size()) {
                 continue;
@@ -329,9 +462,10 @@ asio::local::stream_protocol::acceptor create_acceptor_if_inactive(
         }
 
         // At this point we can remove the stale socket and start listening
-        fs::remove(endpoint_path);
-        return asio::local::stream_protocol::acceptor(io_context, endpoint);
+        endpoint.remove();
+        return endpoint.listen(io_context);
     }
+#endif
 }
 
 void GroupBridge::maybe_schedule_shutdown(

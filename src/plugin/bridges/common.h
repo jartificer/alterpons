@@ -30,6 +30,7 @@
 #include "../../common/notifications.h"
 #include "../../common/utils.h"
 #include "../host-process.h"
+#include "../x11-relay.h"
 
 /**
  * If the amount of lockable memory is below this, then we'll warn about it
@@ -89,6 +90,14 @@ class PluginBridge {
           sockets_(create_socket_instance(io_context_, info_)),
           generic_logger_(Logger::create_from_environment(
               create_logger_prefix(sockets_.base_dir_))),
+          // The 32-bit Wine plugin host can't connect to the X11 server by
+          // itself, so it will go through this relay instead. See
+          // `X11Relay` for more information.
+          x11_relay_(sockets_.transport_ == SocketTransport::tcp_loopback
+                         ? std::make_unique<X11Relay>(
+                               sockets_.endpoint(x11_relay_endpoint_name),
+                               generic_logger_)
+                         : nullptr),
           plugin_host_(
               config_.group
                   ? std::unique_ptr<HostProcess>(std::make_unique<GroupHost>(
@@ -464,6 +473,12 @@ class PluginBridge {
      * @see Logger::create_from_env
      */
     Logger generic_logger_;
+
+    /**
+     * Forwards X11 connections from the 32-bit Wine plugin host to the X11
+     * server. Only used when the Wine plugin host uses TCP sockets.
+     */
+    std::unique_ptr<X11Relay> x11_relay_;
 
     /**
      * The Wine process hosting our plugins. In the case of group hosts a

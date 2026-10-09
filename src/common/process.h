@@ -24,6 +24,15 @@
 
 #include <ghc/filesystem.hpp>
 
+#ifdef YABRIDGE_PE_HOST
+#include <sys/types.h>
+
+// The 32-bit PE Wine plugin host only needs to be able to check whether the
+// native plugin host is still running. Everything else in this header relies on
+// Linux APIs.
+bool pid_running(pid_t pid);
+#else
+
 // We also use this header from the chainloaders, and we don't want to pull in
 // Asio there
 #ifndef WITHOUT_ASIO
@@ -283,3 +292,5 @@ class Process {
 
     mutable std::vector<char const*> argv_;
 };
+
+#endif  // YABRIDGE_PE_HOST

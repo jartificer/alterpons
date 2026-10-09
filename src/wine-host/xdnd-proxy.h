@@ -21,10 +21,16 @@
 #include "use-linux-asio.h"
 
 // Use the native version of xcb
+#ifdef YABRIDGE_PE_HOST
+// The PE host uses its own minimal libxcb implementation, see
+// `xcb-pe/xcb-pe.h`
+#include "xcb-pe/xcb-pe.h"
+#else
 #pragma push_macro("_WIN32")
 #undef _WIN32
 #include <xcb/xcb.h>
 #pragma pop_macro("_WIN32")
+#endif
 
 #include <llvm/small-vector.h>
 #include <windows.h>

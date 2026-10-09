@@ -57,8 +57,34 @@ PluginInfo::PluginInfo(PluginType plugin_type,
           normalize_plugin_path(windows_library_path_, plugin_type)),
       wine_prefix_(find_wine_prefix(windows_plugin_path_)) {}
 
+SocketTransport socket_transport_for(LibArchitecture plugin_arch) noexcept {
+    return is_pe_host(plugin_arch) ? SocketTransport::tcp_loopback
+                                   : SocketTransport::unix_domain;
+}
+
+bool is_pe_host(LibArchitecture plugin_arch) noexcept {
+    return plugin_arch == LibArchitecture::dll_32;
+}
+
+std::string get_wine_loader() {
+    // NOLINTNEXTLINE(concurrency-mt-unsafe)
+    if (const char* wine_loader = getenv("WINELOADER");
+        wine_loader && wine_loader[0] != '\0') {
+        return wine_loader;
+    } else {
+        return "wine";
+    }
+}
+
 ProcessEnvironment PluginInfo::create_host_env() const {
     ProcessEnvironment env(environ);
+
+    // The 32-bit host uses loopback TCP sockets that need to be authenticated
+    // using a shared secret. This is passed through the environment since
+    // command line arguments are visible to other users.
+    if (socket_transport_for(plugin_arch_) == SocketTransport::tcp_loopback) {
+        env.insert(tcp_auth_token_env_var, get_tcp_auth_token());
+    }
 
     // Only set the prefix when could auto detect it and it's not being
     // overridden (this entire `std::visit` instead of `std::has_alternative` is
