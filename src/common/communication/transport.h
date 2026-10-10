@@ -24,10 +24,10 @@
 #ifdef __WINE__
 #include "../../wine-host/use-linux-asio.h"
 #endif
+#include <asio/buffer.hpp>
 #include <asio/generic/stream_protocol.hpp>
 #include <asio/io_context.hpp>
 #include <asio/ip/tcp.hpp>
-#include <asio/buffer.hpp>
 #include <asio/socket_base.hpp>
 
 /**
@@ -102,8 +102,7 @@ class BufferedSocket : public asio::generic::stream_protocol::socket {
                 read_ahead_.resize(read_ahead_buffer_size);
             }
             read_ahead_start_ = 0;
-            read_ahead_end_ =
-                Base::read_some(asio::buffer(read_ahead_), ec);
+            read_ahead_end_ = Base::read_some(asio::buffer(read_ahead_), ec);
             if (ec) {
                 read_ahead_end_ = 0;
                 return 0;

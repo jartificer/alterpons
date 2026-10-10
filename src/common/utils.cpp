@@ -87,9 +87,9 @@ void set_current_thread_name(const char* name) noexcept {
     // an import for it
     using SetThreadDescription_t = HRESULT(WINAPI*)(HANDLE, PCWSTR);
     static const auto set_thread_description =
-        reinterpret_cast<SetThreadDescription_t>(reinterpret_cast<void*>(
-            GetProcAddress(GetModuleHandleW(L"kernel32.dll"),
-                           "SetThreadDescription")));
+        reinterpret_cast<SetThreadDescription_t>(
+            reinterpret_cast<void*>(GetProcAddress(
+                GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription")));
     if (!set_thread_description) {
         return;
     }

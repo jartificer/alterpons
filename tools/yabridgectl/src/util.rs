@@ -394,11 +394,11 @@ pub fn verify_wine_setup(config: &mut Config) -> Result<()> {
 
     // Hash the contents of `yabridge-host.exe.so` since `yabridge-host.exe` is only a Wine
     // generated shell script. If somehow only the 32-bit verison is installed, we'll just hash that
-    // one.
+    // one. That one is a regular Windows executable, so we can hash it directly.
     let yabridge_host_hash = hash_file(
         &files
             .yabridge_host_exe_so
-            .or(files.yabridge_host_32_exe_so)
+            .or(files.yabridge_host_32_exe.clone())
             .with_context(|| format!("Could not locate '{}.so'", YABRIDGE_HOST_EXE_NAME))?,
     )?;
 
@@ -414,7 +414,10 @@ pub fn verify_wine_setup(config: &mut Config) -> Result<()> {
 
     // It could be that the default Wine prefix was created with `WINEARCH=win32` set. In that case
     // we should run the 32-bit `yabridge-host.exe` since the 64-bit verison won't be able to run.
-    let host_binary_path = match get_default_wine_prefix_arch() {
+    // The 32-bit host is a regular Windows executable that needs to be run through Wine, while
+    // the 64-bit host is a Winelib application that can be run directly
+    let prefix_arch = get_default_wine_prefix_arch();
+    let host_binary_path = match prefix_arch {
         LibArchitecture::Lib32 => files
             .yabridge_host_32_exe
             .with_context(|| format!("Could not find '{}'", YABRIDGE_HOST_32_EXE_NAME)),
@@ -423,7 +426,15 @@ pub fn verify_wine_setup(config: &mut Config) -> Result<()> {
             .with_context(|| format!("Could not find '{}'", YABRIDGE_HOST_EXE_NAME)),
     }?;
 
-    let output = Command::new(&host_binary_path)
+    let mut host_command = match prefix_arch {
+        LibArchitecture::Lib32 => {
+            let mut command = Command::new(&wine_binary);
+            command.arg(&host_binary_path);
+            command
+        }
+        LibArchitecture::Lib64 => Command::new(&host_binary_path),
+    };
+    let output = host_command
         .output()
         .with_context(|| format!("Could not run '{}'", host_binary_path.display()))?;
     let stderr = String::from_utf8(output.stderr)?;

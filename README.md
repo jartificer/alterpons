@@ -3,10 +3,18 @@
 [![Automated builds](https://github.com/robbert-vdh/yabridge/workflows/Automated%20builds/badge.svg?branch=master&event=push)](https://github.com/robbert-vdh/yabridge/actions?query=workflow%3A%22Automated+builds%22+branch%3Amaster)
 [![Discord](https://img.shields.io/discord/786993304197267527.svg?label=Discord&logo=discord&logoColor=ffffff&color=7389D8&labelColor=6A7EC2)](https://discord.gg/pyNeweqadf)
 
+> [!NOTE]
+> This is a modified version of
+> [robbert-vdh/yabridge](https://github.com/robbert-vdh/yabridge) that adds
+> support for 32-bit Windows plugins with Wine's new WoW64 mode, which is what
+> Arch Linux' `wine` and `wine-staging` packages use. See
+> [32-bit bitbridge](#32-bit-bitbridge) for build instructions and details.
+> Please don't report issues with this version to the upstream project.
+
 > [!CAUTION]
-> This is the only official yabridge page. If you came from a website claiming
-> to be related to yabridge, then that website was likely fake and trying to
-> spread malware.
+> The upstream yabridge project's GitHub page is its only official page. If you
+> came from a website claiming to be related to yabridge, then that website was
+> likely fake and trying to spread malware.
 
 Yet Another way to use Windows audio plugins on Linux. Yabridge seamlessly
 supports using both 32-bit and 64-bit Windows VST2, VST3, and CLAP plugins in
@@ -165,9 +173,17 @@ Please let me know if there are any issues with other hosts.
 
 Yabridge can also load 32-bit Windows plugins so you can use them in your 64-bit
 Linux DAW. Yabridge will automatically detect whether a plugin is 32-bit or
-64-bit on startup and it will handle it accordingly. If you've installed
-yabridge through a distro package, then it may be possible that your distro has
-disabled this feature.
+64-bit on startup and it will handle it accordingly. 32-bit and 64-bit plugins
+can be used side by side in the same DAW session. If you've installed yabridge
+through a distro package, then it may be possible that your distro has disabled
+this feature.
+
+In this version of yabridge the 32-bit plugin host (`yabridge-host-32.exe`) is a
+regular 32-bit Windows executable instead of a 32-bit Winelib application. This
+makes it work with Wine's new WoW64 mode, which is what Arch Linux' `wine` and
+`wine-staging` packages have been using since mid 2025. In that mode Wine no
+longer has a 32-bit Linux side, so the old 32-bit Winelib host could not run
+there. See [32-bit bitbridge](#32-bit-bitbridge) for more information.
 
 ### Wine prefixes
 
@@ -871,27 +887,84 @@ After you've finished building you can follow the instructions under the
 
 ### 32-bit bitbridge
 
-**The bitbridge functionality is not compatible and likely will never be compatible with Wine's new WoW64 build mode ([Wine #58377](https://bugs.winehq.org/show_bug.cgi?id=58377)).** If your Wine distribution does not come with a `wine64` binary, then yabridge's bitbridge will likely not work.
+To use 32-bit Windows plugins, such as old SynthEdit plugins, you'll also need
+to build the 32-bit plugin host `yabridge-host-32.exe`. This allows yabridge to
+act as a bitbridge, letting you run old 32-bit only Windows plugins in a modern
+64-bit Linux plugin host alongside your 64-bit plugins.
 
-It is also possible to compile a host application for yabridge that's compatible
-with 32-bit plugins such as old SynthEdit plugins. This will allow yabridge to
-act as a bitbridge, allowing you to run old 32-bit only Windows plugins in a
-modern 64-bit Linux plugin host. For this you'll need to have installed the 32
-bit versions of the XCB library. This can then be set up as follows:
+Upstream yabridge built this host as a 32-bit Winelib application, which is not
+compatible with Wine's new WoW64 mode ([Wine
+#58377](https://bugs.winehq.org/show_bug.cgi?id=58377)). Distros like Arch
+Linux now ship Wine in that mode. This version of yabridge instead builds the
+32-bit host as a regular 32-bit Windows executable using MinGW-w64, which works
+with both new and old style WoW64 Wine builds. For this you'll need the
+`i686-w64-mingw32` MinGW-w64 cross compiler with POSIX threads:
+
+- On Arch Linux: `sudo pacman -S mingw-w64-gcc`
+- On Debian and Ubuntu: `sudo apt install g++-mingw-w64-i686-posix`, and use
+  `cross-mingw-i686-posix.conf` instead of `cross-mingw-i686.conf` below
+
+Meson can only use one cross compiler per build directory, so the 32-bit host
+needs its own build directory:
 
 ```shell
-# Enable the bitbridge on an existing build
-meson configure build -Dbitbridge=true
-# Or configure a new build from scratch
-meson setup build --buildtype=release --cross-file cross-wine.conf -Dbitbridge=true
-
+# The native plugin libraries and the 64-bit plugin host, as described above
+meson setup build --buildtype=release --cross-file=cross-wine.conf --unity=on --unity-size=1000
 ninja -C build
+
+# The 32-bit plugin host
+meson setup build-32 --buildtype=release --cross-file=cross-mingw-i686.conf --unity=on --unity-size=1000
+ninja -C build-32
+
+# yabridge looks for the plugin hosts next to the plugin libraries, so they
+# should end up in the same directory
+cp build-32/yabridge-host-32.exe build/
 ```
 
-This will produce a second plugin host binary called `yabridge-host-32.exe`.
+Then install `build/yabridge-host-32.exe` alongside the other files as described
+in the [usage](#usage) section, for instance in `~/.local/share/yabridge`. On
+Arch Linux you can also use the `PKGBUILD` in
+[`tools/arch`](tools/arch/PKGBUILD), which builds and installs everything
+including `yabridgectl`:
+
+```shell
+cd tools/arch
+makepkg -si
+```
+
 Yabridge will detect whether the plugin you're trying to load is 32-bit or
 64-bit, and will run either the regular version or the `*-32.exe` variant
-accordingly.
+accordingly. The 32-bit host is started through `wine` (or `$WINELOADER`, if
+that's set).
+
+There are a couple of differences between the two hosts, since the 32-bit host
+can only use the Windows API:
+
+- Wine's Winsock implementation does not support Unix domain sockets, so the
+  32-bit host talks to the native plugin over TCP sockets on the loopback
+  interface instead. Every connection is authenticated with a challenge-response
+  handshake using a secret that's only readable by your user
+  (`$XDG_RUNTIME_DIR/yabridge-tcp-token-<uid>`). Every Winsock operation in Wine
+  involves a round trip to `wineserver`, so the 32-bit host adds more latency
+  per processing cycle than the 64-bit host. In testing this was around 100-150
+  microseconds extra per audio buffer, which is not noticeable at normal buffer
+  sizes but may matter at very small buffer sizes.
+- The 32-bit host can't connect to the X11 server directly, so its X11
+  connections for editor embedding and drag-and-drop go through a small relay
+  in the native plugin library.
+- Wine only maps Windows thread priorities to nice values. To still get
+  `SCHED_FIFO` realtime scheduling for the audio threads, the 32-bit host makes
+  the `sched_setscheduler()` Linux system call directly. Set
+  `YABRIDGE_NO_LINUX_SYSCALLS=1` to disable this if it ever causes problems.
+
+[`tools/smoke-test`](tools/smoke-test/run-smoke-test.sh) contains an end-to-end
+test that builds a minimal 32-bit and 64-bit Windows VST2 plugin and a minimal
+native VST2 host, and then uses those to test both plugin hosts, including
+running 32-bit and 64-bit plugins at the same time:
+
+```shell
+tools/smoke-test/run-smoke-test.sh build build-32
+```
 
 ## Debugging
 

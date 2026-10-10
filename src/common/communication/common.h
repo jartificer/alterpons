@@ -419,8 +419,7 @@ class SocketHandler {
     void close() {
         // The shutdown can fail when the socket is already closed
         std::error_code err;
-        socket_.shutdown(Socket::shutdown_both,
-                         err);
+        socket_.shutdown(Socket::shutdown_both, err);
         socket_.close();
     }
 
@@ -630,8 +629,7 @@ class AdHocSocketHandler {
     void close() {
         // The shutdown can fail when the socket is already closed
         std::error_code err;
-        socket_.shutdown(Socket::shutdown_both,
-                         err);
+        socket_.shutdown(Socket::shutdown_both, err);
         socket_.close();
 
         while (currently_listening_) {
@@ -657,14 +655,13 @@ class AdHocSocketHandler {
      *   this function is currently being called from another thread.
      */
     template <std::invocable<Socket&> F>
-    std::invoke_result_t<F, Socket&> send(
-        F&& callback) {
+    std::invoke_result_t<F, Socket&> send(F&& callback) {
         // A bit of template and constexpr nastiness to allow us to either
         // return a value from the callback (for when writing the response to a
         // new object) or to return void (when we deserialize into an existing
         // object)
-        constexpr bool returns_void = std::is_void_v<
-            std::invoke_result_t<F, Socket&>>;
+        constexpr bool returns_void =
+            std::is_void_v<std::invoke_result_t<F, Socket&>>;
 
         // XXX: Maybe at some point we should benchmark how often this
         //      ad hoc socket spawning mechanism gets used. If some hosts
@@ -739,8 +736,7 @@ class AdHocSocketHandler {
      *   same thing as `primary_callback`, but secondary sockets may need some
      *   different handling.
      */
-    template <std::invocable<Socket&> F,
-              std::invocable<Socket&> G>
+    template <std::invocable<Socket&> F, std::invocable<Socket&> G>
     void receive_multi(std::optional<std::reference_wrapper<Logger>> logger,
                        F&& primary_callback,
                        G&& secondary_callback) {
@@ -767,33 +763,29 @@ class AdHocSocketHandler {
         std::unordered_map<size_t, Thread> active_secondary_requests{};
         std::atomic_size_t next_request_id{};
         std::mutex active_secondary_requests_mutex{};
-        accept_requests(
-            *acceptor_, logger,
-            [&](Socket secondary_socket) {
-                const size_t request_id = next_request_id.fetch_add(1);
+        accept_requests(*acceptor_, logger, [&](Socket secondary_socket) {
+            const size_t request_id = next_request_id.fetch_add(1);
 
-                // We have to make sure to keep moving these sockets into the
-                // threads that will handle them
-                std::lock_guard lock(active_secondary_requests_mutex);
-                active_secondary_requests[request_id] = Thread(
-                    [&, request_id](
-                        Socket secondary_socket) {
-                        secondary_callback(secondary_socket);
+            // We have to make sure to keep moving these sockets into the
+            // threads that will handle them
+            std::lock_guard lock(active_secondary_requests_mutex);
+            active_secondary_requests[request_id] = Thread(
+                [&, request_id](Socket secondary_socket) {
+                    secondary_callback(secondary_socket);
 
-                        // When we have processed this request, we'll join the
-                        // thread again with the thread that's handling
-                        // `secondary_context`
-                        asio::post(secondary_context, [&, request_id]() {
-                            std::lock_guard lock(
-                                active_secondary_requests_mutex);
+                    // When we have processed this request, we'll join the
+                    // thread again with the thread that's handling
+                    // `secondary_context`
+                    asio::post(secondary_context, [&, request_id]() {
+                        std::lock_guard lock(active_secondary_requests_mutex);
 
-                            // The join is implicit because we're using
-                            // `std::jthread`/`Win32Thread`
-                            active_secondary_requests.erase(request_id);
-                        });
-                    },
-                    std::move(secondary_socket));
-            });
+                        // The join is implicit because we're using
+                        // `std::jthread`/`Win32Thread`
+                        active_secondary_requests.erase(request_id);
+                    });
+                },
+                std::move(secondary_socket));
+        });
 
         Thread secondary_requests_handler([&]() {
             set_current_thread_name("adhoc-acceptor");
@@ -853,43 +845,41 @@ class AdHocSocketHandler {
     void accept_requests(SocketAcceptor& acceptor,
                          std::optional<std::reference_wrapper<Logger>> logger,
                          F&& callback) {
-        acceptor.async_accept(
-            [&, logger, callback](
-                const std::error_code& error,
-                Socket secondary_socket) {
-                if (error) {
-                    // On the Wine side it's expected that the primary socket
-                    // connection will be dropped during shutdown, so we can
-                    // silently ignore any related socket errors on the Wine
-                    // side
-                    if (logger) {
-                        logger->get().log(
-                            "Failure while accepting connections: " +
-                            error.message());
-                    }
-
-                    return;
+        acceptor.async_accept([&, logger, callback](
+                                  const std::error_code& error,
+                                  Socket secondary_socket) {
+            if (error) {
+                // On the Wine side it's expected that the primary socket
+                // connection will be dropped during shutdown, so we can
+                // silently ignore any related socket errors on the Wine
+                // side
+                if (logger) {
+                    logger->get().log("Failure while accepting connections: " +
+                                      error.message());
                 }
 
-                // With TCP sockets the other side first needs to
-                // authenticate itself. Connections that fail to do so are
-                // dropped.
-                try {
-                    endpoint_.finish_accept(secondary_socket);
-                } catch (const std::system_error& error) {
-                    if (logger) {
-                        logger->get().log("Dropping connection: " +
-                                          std::string(error.what()));
-                    }
+                return;
+            }
 
-                    accept_requests(acceptor, logger, callback);
-                    return;
+            // With TCP sockets the other side first needs to
+            // authenticate itself. Connections that fail to do so are
+            // dropped.
+            try {
+                endpoint_.finish_accept(secondary_socket);
+            } catch (const std::system_error& error) {
+                if (logger) {
+                    logger->get().log("Dropping connection: " +
+                                      std::string(error.what()));
                 }
-
-                callback(std::move(secondary_socket));
 
                 accept_requests(acceptor, logger, callback);
-            });
+                return;
+            }
+
+            callback(std::move(secondary_socket));
+
+            accept_requests(acceptor, logger, callback);
+        });
     }
 
     /**
@@ -1135,67 +1125,66 @@ class TypedMessageHandler : public AdHocSocketHandler<Thread> {
         // Reading, processing, and writing back the response for the requests
         // we receive works in the same way regardless of which socket we're
         // using
-        const auto process_message =
-            [&](Socket& socket) {
-                // The persistent buffer is only used when the
-                // `persistent_buffers` template value is enabled, but we'll
-                // always use the thread local persistent object. Because of
-                // loading and storing state the buffer can grow a lot in size
-                // which is why we might not want to reuse that for tasks that
-                // don't need to be realtime safe, but the object has a fixed
-                // size. Normally reusing this object doesn't make much sense
-                // since it's a variant and it will likely have to be recreated
-                // every time, but on the audio processor side we store the
-                // actual variant within an object and we then use some hackery
-                // to always keep the large process data object in memory.
-                // NOTE: Unlike the VST2 version, this persistent buffer is only
-                //       used for audio thread messages
-                thread_local SerializationBuffer<256> persistent_buffer{};
-                thread_local Request persistent_object;
+        const auto process_message = [&](Socket& socket) {
+            // The persistent buffer is only used when the
+            // `persistent_buffers` template value is enabled, but we'll
+            // always use the thread local persistent object. Because of
+            // loading and storing state the buffer can grow a lot in size
+            // which is why we might not want to reuse that for tasks that
+            // don't need to be realtime safe, but the object has a fixed
+            // size. Normally reusing this object doesn't make much sense
+            // since it's a variant and it will likely have to be recreated
+            // every time, but on the audio processor side we store the
+            // actual variant within an object and we then use some hackery
+            // to always keep the large process data object in memory.
+            // NOTE: Unlike the VST2 version, this persistent buffer is only
+            //       used for audio thread messages
+            thread_local SerializationBuffer<256> persistent_buffer{};
+            thread_local Request persistent_object;
 
-                auto& request =
-                    persistent_buffers
-                        ? read_object<Request>(socket, persistent_object,
-                                               persistent_buffer)
-                        : read_object<Request>(socket, persistent_object);
+            auto& request =
+                persistent_buffers
+                    ? read_object<Request>(socket, persistent_object,
+                                           persistent_buffer)
+                    : read_object<Request>(socket, persistent_object);
 
-                // See the comment in `receive_into()` for more information
-                bool should_log_response = false;
-                if (logging) {
-                    should_log_response = std::visit(
-                        [&](const auto& object) {
-                            auto [logger, is_host_plugin] = *logging;
-                            return logger.log_request(is_host_plugin, object);
-                        },
-                        // In the case of `Vst3AudioProcessorRequest`, we need
-                        // to actually fetch the variant field since our object
-                        // also contains a persistent object to store process
-                        // data into so we can prevent allocations during audio
-                        // processing
-                        get_request_variant(request));
-                }
-
-                // We do the visiting here using a templated lambda. This way we
-                // always know for sure that the function returns the correct
-                // type, and we can scrap a lot of boilerplate elsewhere.
-                std::visit(
-                    [&]<typename T>(T object) {
-                        typename T::Response response = callback(object);
-
-                        if (should_log_response) {
-                            auto [logger, is_host_plugin] = *logging;
-                            logger.log_response(!is_host_plugin, response);
-                        }
-
-                        if constexpr (persistent_buffers) {
-                            write_object(socket, response, persistent_buffer);
-                        } else {
-                            write_object(socket, response);
-                        }
+            // See the comment in `receive_into()` for more information
+            bool should_log_response = false;
+            if (logging) {
+                should_log_response = std::visit(
+                    [&](const auto& object) {
+                        auto [logger, is_host_plugin] = *logging;
+                        return logger.log_request(is_host_plugin, object);
                     },
-                    // See above
+                    // In the case of `Vst3AudioProcessorRequest`, we need
+                    // to actually fetch the variant field since our object
+                    // also contains a persistent object to store process
+                    // data into so we can prevent allocations during audio
+                    // processing
                     get_request_variant(request));
-            };
+            }
+
+            // We do the visiting here using a templated lambda. This way we
+            // always know for sure that the function returns the correct
+            // type, and we can scrap a lot of boilerplate elsewhere.
+            std::visit(
+                [&]<typename T>(T object) {
+                    typename T::Response response = callback(object);
+
+                    if (should_log_response) {
+                        auto [logger, is_host_plugin] = *logging;
+                        logger.log_response(!is_host_plugin, response);
+                    }
+
+                    if constexpr (persistent_buffers) {
+                        write_object(socket, response, persistent_buffer);
+                    } else {
+                        write_object(socket, response);
+                    }
+                },
+                // See above
+                get_request_variant(request));
+        };
 
         this->receive_multi(
             logging ? std::optional(std::ref(logging->first.logger_))

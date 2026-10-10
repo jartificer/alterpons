@@ -85,10 +85,9 @@ class DefaultDataConverter {
      * back. This can be overridden to use `MutualRecursionHelper::fork()` for
      * specific opcodes to allow mutually recursive calling sequences.
      */
-    virtual Vst2EventResult send_event(
-        Socket& socket,
-        const Vst2Event& event,
-        SerializationBufferBase& buffer) const;
+    virtual Vst2EventResult send_event(Socket& socket,
+                                       const Vst2Event& event,
+                                       SerializationBufferBase& buffer) const;
 };
 
 /**
@@ -205,11 +204,10 @@ class Vst2EventHandler : public AdHocSocketHandler<Thread> {
         // from the socket, so we can override this for specific function calls
         // that potentially need to have their responses handled on the same
         // calling thread (i.e. mutual recursion).
-        const Vst2EventResult response =
-            this->send([&](Socket& socket) {
-                return data_converter.send_event(socket, event,
-                                                 serialization_buffer());
-            });
+        const Vst2EventResult response = this->send([&](Socket& socket) {
+            return data_converter.send_event(socket, event,
+                                             serialization_buffer());
+        });
 
         if (logging) {
             auto [logger, is_dispatch] = *logging;
@@ -249,39 +247,33 @@ class Vst2EventHandler : public AdHocSocketHandler<Thread> {
                         F&& callback) {
         // Reading, processing, and writing back event data from the sockets
         // works in the same way regardless of which socket we're using
-        const auto process_event =
-            [&](Socket& socket,
-                bool on_main_thread) {
-                SerializationBufferBase& buffer = serialization_buffer();
+        const auto process_event = [&](Socket& socket, bool on_main_thread) {
+            SerializationBufferBase& buffer = serialization_buffer();
 
-                auto event = read_object<Vst2Event>(socket, buffer);
-                if (logging) {
-                    auto [logger, is_dispatch] = *logging;
-                    logger.log_event(is_dispatch, event.opcode, event.index,
-                                     event.value, event.payload, event.option,
-                                     event.value_payload);
-                }
+            auto event = read_object<Vst2Event>(socket, buffer);
+            if (logging) {
+                auto [logger, is_dispatch] = *logging;
+                logger.log_event(is_dispatch, event.opcode, event.index,
+                                 event.value, event.payload, event.option,
+                                 event.value_payload);
+            }
 
-                Vst2EventResult response = callback(event, on_main_thread);
-                if (logging) {
-                    auto [logger, is_dispatch] = *logging;
-                    logger.log_event_response(
-                        is_dispatch, event.opcode, response.return_value,
-                        response.payload, response.value_payload);
-                }
+            Vst2EventResult response = callback(event, on_main_thread);
+            if (logging) {
+                auto [logger, is_dispatch] = *logging;
+                logger.log_event_response(
+                    is_dispatch, event.opcode, response.return_value,
+                    response.payload, response.value_payload);
+            }
 
-                write_object(socket, response, buffer);
-            };
+            write_object(socket, response, buffer);
+        };
 
         this->receive_multi(
             logging ? std::optional(std::ref(logging->first.logger_))
                     : std::nullopt,
-            [&](Socket& socket) {
-                process_event(socket, true);
-            },
-            [&](Socket& socket) {
-                process_event(socket, false);
-            });
+            [&](Socket& socket) { process_event(socket, true); },
+            [&](Socket& socket) { process_event(socket, false); });
     }
 
    private:
@@ -351,26 +343,22 @@ class Vst2Sockets final : public Sockets {
                 bool listen,
                 SocketTransport transport = default_socket_transport)
         : Sockets(endpoint_base_dir, transport),
-          host_plugin_dispatch_(
-              io_context,
-              endpoint("host_plugin_dispatch.sock"),
-              listen),
-          plugin_host_callback_(
-              io_context,
-              endpoint("plugin_host_callback.sock"),
-              listen),
-          host_plugin_parameters_(
-              io_context,
-              endpoint("host_plugin_parameters.sock"),
-              listen),
+          host_plugin_dispatch_(io_context,
+                                endpoint("host_plugin_dispatch.sock"),
+                                listen),
+          plugin_host_callback_(io_context,
+                                endpoint("plugin_host_callback.sock"),
+                                listen),
+          host_plugin_parameters_(io_context,
+                                  endpoint("host_plugin_parameters.sock"),
+                                  listen),
           host_plugin_process_replacing_(
               io_context,
               endpoint("host_plugin_process_replacing.sock"),
               listen),
-          host_plugin_control_(
-              io_context,
-              endpoint("host_plugin_control.sock"),
-              listen) {}
+          host_plugin_control_(io_context,
+                               endpoint("host_plugin_control.sock"),
+                               listen) {}
 
     ~Vst2Sockets() noexcept override { close(); }
 

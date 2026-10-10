@@ -268,7 +268,8 @@ std::string load_or_create_token() {
         get_temporary_directory() /
         ("yabridge-tcp-token-" + std::to_string(getuid()));
 
-    if (std::string token = read_token_file(token_path); is_valid_token(token)) {
+    if (std::string token = read_token_file(token_path);
+        is_valid_token(token)) {
         return token;
     }
 
@@ -345,8 +346,8 @@ void write_file_atomically(const std::string& path,
     if (err) {
         std::error_code ignored;
         fs::remove(temp_path, ignored);
-        throw std::system_error(err, "Could not create '" +
-                                         target_path.string() + "'");
+        throw std::system_error(
+            err, "Could not create '" + target_path.string() + "'");
     }
 }
 
@@ -372,13 +373,12 @@ void read_handshake(Socket& socket,
             throw std::system_error(err, "Error during socket handshake");
         }
         if (ready == 0) {
-            throw std::system_error(
-                std::make_error_code(std::errc::timed_out),
-                "Timed out during socket handshake");
+            throw std::system_error(std::make_error_code(std::errc::timed_out),
+                                    "Timed out during socket handshake");
         }
 
-        bytes_read += socket.read_some(
-            asio::buffer(buffer.data() + bytes_read, buffer.size() - bytes_read));
+        bytes_read += socket.read_some(asio::buffer(
+            buffer.data() + bytes_read, buffer.size() - bytes_read));
     }
 }
 
@@ -493,8 +493,8 @@ SocketAcceptor SocketEndpoint::listen(asio::io_context& io_context) const {
                 acceptor.local_endpoint();
             std::memcpy(bound_endpoint.data(), local_endpoint.data(),
                         local_endpoint.size());
-            write_file_atomically(
-                path_, std::to_string(bound_endpoint.port()) + "\n");
+            write_file_atomically(path_,
+                                  std::to_string(bound_endpoint.port()) + "\n");
 
             return acceptor;
         } break;

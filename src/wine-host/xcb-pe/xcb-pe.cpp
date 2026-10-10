@@ -251,8 +251,8 @@ struct xcb_connection_t {
 
             const size_t old_size = input_buffer_.size();
             input_buffer_.resize(old_size + bytes_to_read);
-            const size_t bytes_read = socket_.read_some(asio::buffer(
-                input_buffer_.data() + old_size, bytes_to_read));
+            const size_t bytes_read = socket_.read_some(
+                asio::buffer(input_buffer_.data() + old_size, bytes_to_read));
             input_buffer_.resize(old_size + bytes_read);
 
             return true;
@@ -468,9 +468,9 @@ std::string find_auth_cookie() {
         if (offset + 2 > data.size()) {
             return false;
         }
-        value = static_cast<uint16_t>(
-            (static_cast<uint8_t>(data[offset]) << 8) |
-            static_cast<uint8_t>(data[offset + 1]));
+        value =
+            static_cast<uint16_t>((static_cast<uint8_t>(data[offset]) << 8) |
+                                  static_cast<uint8_t>(data[offset + 1]));
         offset += 2;
         return true;
     };
@@ -534,7 +534,8 @@ void xcb_connection_t::connect(const std::string& relay_endpoint) {
         // Set up the X11 connection, as described in
         // https://www.x.org/releases/X11R7.7/doc/xproto/x11protocol.html#Encoding::Connection_Setup
         const std::string cookie = find_auth_cookie();
-        const std::string auth_name = cookie.empty() ? "" : mit_magic_cookie_name;
+        const std::string auth_name =
+            cookie.empty() ? "" : mit_magic_cookie_name;
 
         std::vector<uint8_t> setup_request;
         const auto push_card16 = [&](uint16_t value) {
@@ -590,8 +591,8 @@ void xcb_connection_t::connect(const std::string& relay_endpoint) {
 
         has_error_ = false;
     } catch (const std::exception& error) {
-        std::cerr << "Could not connect to the X11 relay at '"
-                  << relay_endpoint << "': " << error.what() << std::endl;
+        std::cerr << "Could not connect to the X11 relay at '" << relay_endpoint
+                  << "': " << error.what() << std::endl;
         fail();
     }
 }
@@ -679,9 +680,8 @@ xcb_screen_iterator_t xcb_setup_roots_iterator(const xcb_setup_t* R) {
         bytes + sizeof(xcb_setup_t) + vendor_length_padded +
         (static_cast<size_t>(R->pixmap_formats_len) * sizeof(xcb_format_t))));
     iterator.rem = R->roots_len;
-    iterator.index = static_cast<int>(reinterpret_cast<const uint8_t*>(
-                                          iterator.data) -
-                                      bytes);
+    iterator.index = static_cast<int>(
+        reinterpret_cast<const uint8_t*>(iterator.data) - bytes);
 
     return iterator;
 }
@@ -729,8 +729,8 @@ xcb_generic_error_t* xcb_request_check(xcb_connection_t* c,
     // a round trip with a request that always generates a reply. Since the
     // server processes requests in order, any error for the checked request
     // will have arrived before that reply.
-    const uint64_t sync_sequence = c->send_request(
-        RequestBuilder(opcode::get_input_focus).finish(), true);
+    const uint64_t sync_sequence =
+        c->send_request(RequestBuilder(opcode::get_input_focus).finish(), true);
     c->wait_for_reply(sync_sequence, nullptr);
 
     std::lock_guard lock(c->mutex_);
@@ -773,8 +773,8 @@ Reply* reply_or_null(xcb_connection_t* c,
 xcb_void_cookie_t void_request(xcb_connection_t* c,
                                RequestBuilder& request,
                                bool checked = false) {
-    return xcb_void_cookie_t{static_cast<unsigned int>(
-        c->send_request(request.finish(), checked))};
+    return xcb_void_cookie_t{
+        static_cast<unsigned int>(c->send_request(request.finish(), checked))};
 }
 
 unsigned int reply_request(xcb_connection_t* c, RequestBuilder& request) {
@@ -817,8 +817,9 @@ xcb_void_cookie_t xcb_change_window_attributes(xcb_connection_t* c,
                                                uint32_t value_mask,
                                                const void* value_list) {
     RequestBuilder request(opcode::change_window_attributes);
-    request.card32(window).card32(value_mask).value_list(value_mask,
-                                                         value_list);
+    request.card32(window)
+        .card32(value_mask)
+        .value_list(value_mask, value_list);
 
     return void_request(c, request);
 }
@@ -877,8 +878,10 @@ xcb_void_cookie_t xcb_configure_window(xcb_connection_t* c,
                                        uint16_t value_mask,
                                        const void* value_list) {
     RequestBuilder request(opcode::configure_window);
-    request.card32(window).card16(value_mask).pad(2).value_list(value_mask,
-                                                                value_list);
+    request.card32(window)
+        .card16(value_mask)
+        .pad(2)
+        .value_list(value_mask, value_list);
 
     return void_request(c, request);
 }
@@ -913,7 +916,8 @@ xcb_query_tree_reply_t* xcb_query_tree_reply(xcb_connection_t* c,
 }
 
 xcb_window_t* xcb_query_tree_children(const xcb_query_tree_reply_t* R) {
-    return reinterpret_cast<xcb_window_t*>(const_cast<xcb_query_tree_reply_t*>(R) + 1);
+    return reinterpret_cast<xcb_window_t*>(
+        const_cast<xcb_query_tree_reply_t*>(R) + 1);
 }
 
 int xcb_query_tree_children_length(const xcb_query_tree_reply_t* R) {

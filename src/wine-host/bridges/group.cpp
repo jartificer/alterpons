@@ -275,125 +275,123 @@ void GroupBridge::handle_incoming_connections() {
 }
 
 void GroupBridge::accept_requests() {
-    group_socket_acceptor_.async_accept(
-        [&](const std::error_code& error, Socket socket) {
-            std::lock_guard lock(active_plugins_mutex_);
+    group_socket_acceptor_.async_accept([&](const std::error_code& error,
+                                            Socket socket) {
+        std::lock_guard lock(active_plugins_mutex_);
 
-            // Stop the whole process when the socket gets closed unexpectedly
-            if (error) {
-                logger_.log("Error while listening for incoming connections:");
-                logger_.log(error.message());
+        // Stop the whole process when the socket gets closed unexpectedly
+        if (error) {
+            logger_.log("Error while listening for incoming connections:");
+            logger_.log(error.message());
 
-                main_context_.stop();
-            }
+            main_context_.stop();
+        }
 
-            // Read the parameters, and then host the plugin in this process
-            // just like if we would be hosting the plugin individually through
-            // `yabridge-hsot.exe`. We will reply with this process's PID so the
-            // yabridge plugin will be able to tell if the plugin has caused
-            // this process to crash during its initialization to prevent
-            // waiting indefinitely on the sockets to be connected to.
-            // With TCP sockets the other side first has to authenticate
-            // itself
-            try {
-                group_socket_endpoint_.finish_accept(socket);
-            } catch (const std::system_error& error) {
-                logger_.log("Dropping connection: " +
-                            std::string(error.what()));
-                accept_requests();
-                return;
-            }
-
-            auto request = read_object<HostRequest>(socket);
-            write_object(socket, HostResponse{.pid = get_current_pid()});
-
-            // The native plugin sends us Linux paths
-            request.plugin_path = to_host_path(request.plugin_path);
-            request.endpoint_base_dir = to_host_path(request.endpoint_base_dir);
-
-            // The plugin has to be initiated on the IO context's thread because
-            // this has to be done on the same thread that's handling messages,
-            // and all window messages have to be handled from the same thread.
-            logger_.log("Received request to host " +
-                        plugin_type_to_string(request.plugin_type) +
-                        " plugin at '" + request.plugin_path +
-                        "' using socket endpoint base directory '" +
-                        request.endpoint_base_dir + "'");
-            try {
-                // Cancel the (initial) shutdown timer, since the plugin may
-                // take longer to initialize if it is new
-                shutdown_timer_.cancel();
-
-                std::unique_ptr<HostBridge> bridge = nullptr;
-                switch (request.plugin_type) {
-                    case PluginType::clap:
-#ifdef WITH_CLAP
-                        bridge = std::make_unique<ClapBridge>(
-                            main_context_, request.plugin_path,
-                            request.endpoint_base_dir, request.parent_pid);
-#else
-                        throw std::runtime_error(
-                            "This version of yabridge has not been compiled "
-                            "with CLAP support");
-#endif
-                        break;
-                    case PluginType::vst2:
-                        bridge = std::make_unique<Vst2Bridge>(
-                            main_context_, request.plugin_path,
-                            request.endpoint_base_dir, request.parent_pid);
-                        break;
-                    case PluginType::vst3:
-#ifdef WITH_VST3
-                        bridge = std::make_unique<Vst3Bridge>(
-                            main_context_, request.plugin_path,
-                            request.endpoint_base_dir, request.parent_pid);
-#else
-                        throw std::runtime_error(
-                            "This version of yabridge has not been compiled "
-                            "with VST3 support");
-#endif
-                        break;
-                    case PluginType::unknown:
-                        throw std::runtime_error(
-                            "Invalid plugin host request received, how did you "
-                            "even manage to do this?");
-                        break;
-                }
-
-                logger_.log("Finished initializing '" + request.plugin_path +
-                            "'");
-
-                // Start listening for dispatcher events sent to the plugin's
-                // socket on another thread. Parts of the actual event handling
-                // will still be posted to this IO context so that any events
-                // that potentially interact with the Win32 message loop are
-                // handled from the main thread. We also pass a raw pointer to
-                // the plugin so we don't have to immediately look the instance
-                // up in the map again, as this would require us to immediately
-                // lock the map again. This could otherwise result in a deadlock
-                // when using the Spitfire plugins, as they will block the
-                // message loop until `effOpen()` has been called and thus
-                // prevent this lock from happening.
-                const size_t plugin_id = next_plugin_id_.fetch_add(1);
-                active_plugins_[plugin_id] = std::pair(
-                    Win32Thread([this, plugin_id, plugin_ptr = bridge.get()]() {
-                        const std::string thread_name =
-                            "worker-" + std::to_string(plugin_id);
-                        set_current_thread_name(thread_name.c_str());
-
-                        handle_plugin_run(plugin_id, plugin_ptr);
-                    }),
-                    std::move(bridge));
-            } catch (const std::exception& error) {
-                logger_.log("Error while initializing '" + request.plugin_path +
-                            "':");
-                logger_.log(error.what());
-
-                maybe_schedule_shutdown(5s);
-            }
-
+        // Read the parameters, and then host the plugin in this process
+        // just like if we would be hosting the plugin individually through
+        // `yabridge-hsot.exe`. We will reply with this process's PID so the
+        // yabridge plugin will be able to tell if the plugin has caused
+        // this process to crash during its initialization to prevent
+        // waiting indefinitely on the sockets to be connected to.
+        // With TCP sockets the other side first has to authenticate
+        // itself
+        try {
+            group_socket_endpoint_.finish_accept(socket);
+        } catch (const std::system_error& error) {
+            logger_.log("Dropping connection: " + std::string(error.what()));
             accept_requests();
-        });
+            return;
+        }
+
+        auto request = read_object<HostRequest>(socket);
+        write_object(socket, HostResponse{.pid = get_current_pid()});
+
+        // The native plugin sends us Linux paths
+        request.plugin_path = to_host_path(request.plugin_path);
+        request.endpoint_base_dir = to_host_path(request.endpoint_base_dir);
+
+        // The plugin has to be initiated on the IO context's thread because
+        // this has to be done on the same thread that's handling messages,
+        // and all window messages have to be handled from the same thread.
+        logger_.log("Received request to host " +
+                    plugin_type_to_string(request.plugin_type) +
+                    " plugin at '" + request.plugin_path +
+                    "' using socket endpoint base directory '" +
+                    request.endpoint_base_dir + "'");
+        try {
+            // Cancel the (initial) shutdown timer, since the plugin may
+            // take longer to initialize if it is new
+            shutdown_timer_.cancel();
+
+            std::unique_ptr<HostBridge> bridge = nullptr;
+            switch (request.plugin_type) {
+                case PluginType::clap:
+#ifdef WITH_CLAP
+                    bridge = std::make_unique<ClapBridge>(
+                        main_context_, request.plugin_path,
+                        request.endpoint_base_dir, request.parent_pid);
+#else
+                    throw std::runtime_error(
+                        "This version of yabridge has not been compiled "
+                        "with CLAP support");
+#endif
+                    break;
+                case PluginType::vst2:
+                    bridge = std::make_unique<Vst2Bridge>(
+                        main_context_, request.plugin_path,
+                        request.endpoint_base_dir, request.parent_pid);
+                    break;
+                case PluginType::vst3:
+#ifdef WITH_VST3
+                    bridge = std::make_unique<Vst3Bridge>(
+                        main_context_, request.plugin_path,
+                        request.endpoint_base_dir, request.parent_pid);
+#else
+                    throw std::runtime_error(
+                        "This version of yabridge has not been compiled "
+                        "with VST3 support");
+#endif
+                    break;
+                case PluginType::unknown:
+                    throw std::runtime_error(
+                        "Invalid plugin host request received, how did you "
+                        "even manage to do this?");
+                    break;
+            }
+
+            logger_.log("Finished initializing '" + request.plugin_path + "'");
+
+            // Start listening for dispatcher events sent to the plugin's
+            // socket on another thread. Parts of the actual event handling
+            // will still be posted to this IO context so that any events
+            // that potentially interact with the Win32 message loop are
+            // handled from the main thread. We also pass a raw pointer to
+            // the plugin so we don't have to immediately look the instance
+            // up in the map again, as this would require us to immediately
+            // lock the map again. This could otherwise result in a deadlock
+            // when using the Spitfire plugins, as they will block the
+            // message loop until `effOpen()` has been called and thus
+            // prevent this lock from happening.
+            const size_t plugin_id = next_plugin_id_.fetch_add(1);
+            active_plugins_[plugin_id] = std::pair(
+                Win32Thread([this, plugin_id, plugin_ptr = bridge.get()]() {
+                    const std::string thread_name =
+                        "worker-" + std::to_string(plugin_id);
+                    set_current_thread_name(thread_name.c_str());
+
+                    handle_plugin_run(plugin_id, plugin_ptr);
+                }),
+                std::move(bridge));
+        } catch (const std::exception& error) {
+            logger_.log("Error while initializing '" + request.plugin_path +
+                        "':");
+            logger_.log(error.what());
+
+            maybe_schedule_shutdown(5s);
+        }
+
+        accept_requests();
+    });
 }
 
 void GroupBridge::async_handle_events() {

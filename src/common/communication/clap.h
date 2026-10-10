@@ -57,21 +57,19 @@ class ClapAudioThreadSockets {
                            bool listen,
                            SocketTransport transport)
         : control_(io_context,
-                   SocketEndpoint(
-                       (endpoint_base_dir /
-                        ("host_plugin_audio_thread_control_" +
-                         std::to_string(instance_id) + ".sock"))
-                           .string(),
-                       transport),
+                   SocketEndpoint((endpoint_base_dir /
+                                   ("host_plugin_audio_thread_control_" +
+                                    std::to_string(instance_id) + ".sock"))
+                                      .string(),
+                                  transport),
                    // The Wine side will end up listening for control messages
                    !listen),
           callback_(io_context,
-                    SocketEndpoint(
-                        (endpoint_base_dir /
-                         ("plugin_host_audio_thread_callback_" +
-                          std::to_string(instance_id) + ".sock"))
-                            .string(),
-                        transport),
+                    SocketEndpoint((endpoint_base_dir /
+                                    ("plugin_host_audio_thread_callback_" +
+                                     std::to_string(instance_id) + ".sock"))
+                                       .string(),
+                                   transport),
                     // And the plugin side for callbacks
                     listen) {}
 

@@ -36,8 +36,8 @@ std::wstring shm_path(const std::string& name) {
     unix_path += name.starts_with('/') ? name.substr(1) : name;
 
     const std::string dos_path = unix_path_to_dos_path(unix_path);
-    const int size = MultiByteToWideChar(CP_UTF8, 0, dos_path.c_str(), -1,
-                                         nullptr, 0);
+    const int size =
+        MultiByteToWideChar(CP_UTF8, 0, dos_path.c_str(), -1, nullptr, 0);
     std::wstring result(size > 0 ? size - 1 : 0, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, dos_path.c_str(), -1, result.data(), size);
 
@@ -48,14 +48,14 @@ std::wstring shm_path(const std::string& name) {
 
 AudioShmBuffer::AudioShmBuffer(const Config& config)
     : config_(config),
-      shm_file_(CreateFileW(shm_path(config.name).c_str(),
-                            GENERIC_READ | GENERIC_WRITE,
-                            FILE_SHARE_READ | FILE_SHARE_WRITE |
-                                FILE_SHARE_DELETE,
-                            nullptr,
-                            OPEN_ALWAYS,
-                            FILE_ATTRIBUTE_NORMAL,
-                            nullptr)) {
+      shm_file_(
+          CreateFileW(shm_path(config.name).c_str(),
+                      GENERIC_READ | GENERIC_WRITE,
+                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                      nullptr,
+                      OPEN_ALWAYS,
+                      FILE_ATTRIBUTE_NORMAL,
+                      nullptr)) {
     if (shm_file_ == INVALID_HANDLE_VALUE) {
         throw std::system_error(
             std::error_code(static_cast<int>(GetLastError()),

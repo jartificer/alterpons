@@ -63,7 +63,7 @@ template <typename F, typename Result, typename... Args>
 concept invocable_returning = requires(F&& f, Result&& result, Args&&... args) {
     {
         std::invoke(std::forward<F>(f), std::forward<Args>(args)...)
-        } -> same_or_convertible_to<Result>;
+    } -> same_or_convertible_to<Result>;
 };
 
 // The cannonical overloading template for `std::visitor`, not sure why this

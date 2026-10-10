@@ -80,9 +80,9 @@ Process::Handle HostProcess::launch_host(
             [&](const Process::CommandNotFound&) -> Process::Handle {
                 throw std::runtime_error(
                     "Could not launch '" +
-                    (launch_through_wine ? get_wine_loader() + "' to run '" +
-                                               host_path.string()
-                                         : host_path.string()) +
+                    (launch_through_wine
+                         ? get_wine_loader() + "' to run '" + host_path.string()
+                         : host_path.string()) +
                     "', command not found");
             },
             [](const std::error_code& err) -> Process::Handle {
@@ -131,22 +131,20 @@ IndividualHost::IndividualHost(asio::io_context& io_context,
                                   plugin_info.plugin_arch_)),
       handle_(launch_host(
           host_path_,
-          {
-              plugin_type_to_string(host_request.plugin_type),
+          {plugin_type_to_string(host_request.plugin_type),
 #if defined(WITH_WINEDBG) && defined(WINEDBG_LEGACY_ARGUMENT_QUOTING)
-                  // Old versions of winedbg flattened all command line
-                  // arguments to a single space separated Win32 command line,
-                  // so we had to do our own quoting
-                  "\"" + plugin_info.windows_plugin_path + "\"",
+           // Old versions of winedbg flattened all command line
+           // arguments to a single space separated Win32 command line,
+           // so we had to do our own quoting
+           "\"" + plugin_info.windows_plugin_path + "\"",
 #else
-                  host_request.plugin_path,
+           host_request.plugin_path,
 #endif
-                  host_request.endpoint_base_dir,
-                  // We pass this process' process ID as an argument so we can
-                  // run a watchdog on the Wine plugin host process that shuts
-                  // down the sockets after this process shuts down
-                  std::to_string(getpid())
-          },
+           host_request.endpoint_base_dir,
+           // We pass this process' process ID as an argument so we can
+           // run a watchdog on the Wine plugin host process that shuts
+           // down the sockets after this process shuts down
+           std::to_string(getpid())},
           logger,
           config,
           plugin_info)) {

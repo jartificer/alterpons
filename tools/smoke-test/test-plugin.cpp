@@ -74,8 +74,8 @@ intptr_t VST_CALL_CONV dispatcher(AEffect* effect,
     TestPlugin* plugin = get_plugin(effect);
     switch (opcode) {
         case effOpen: {
-            const intptr_t host_version = plugin->master(
-                effect, audioMasterVersion, 0, 0, nullptr, 0.0f);
+            const intptr_t host_version =
+                plugin->master(effect, audioMasterVersion, 0, 0, nullptr, 0.0f);
             fprintf(stderr,
                     "Smoke test plugin running as a %d-bit plugin, the host "
                     "reports VST version %d\n",

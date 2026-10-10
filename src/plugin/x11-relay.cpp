@@ -52,17 +52,16 @@ class RelaySession : public std::enable_shared_from_this<RelaySession> {
                     return;
                 }
 
-                asio::async_write(
-                    to, asio::buffer(buffer, bytes_read),
-                    [this, self, &from, &to, &buffer](
-                        const std::error_code& error, size_t) {
-                        if (error) {
-                            shutdown();
-                            return;
-                        }
+                asio::async_write(to, asio::buffer(buffer, bytes_read),
+                                  [this, self, &from, &to, &buffer](
+                                      const std::error_code& error, size_t) {
+                                      if (error) {
+                                          shutdown();
+                                          return;
+                                      }
 
-                        pump(from, to, buffer);
-                    });
+                                      pump(from, to, buffer);
+                                  });
             });
     }
 
@@ -113,9 +112,8 @@ void connect_to_x11_server(Socket& socket) {
         slash_pos != std::string::npos) {
         host = host.substr(slash_pos + 1);
     }
-    const std::string display_number_str =
-        display.substr(colon_pos + 1, display.find('.', colon_pos) - colon_pos -
-                                          1);
+    const std::string display_number_str = display.substr(
+        colon_pos + 1, display.find('.', colon_pos) - colon_pos - 1);
     const int display_number = std::stoi(display_number_str);
 
     if (host.empty() || host == "unix") {
@@ -126,8 +124,8 @@ void connect_to_x11_server(Socket& socket) {
             "/tmp/.X11-unix/X" + std::to_string(display_number);
         try {
             socket.connect(asio::generic::stream_protocol::endpoint(
-                asio::local::stream_protocol::endpoint(
-                    std::string(1, '\0') + socket_path)));
+                asio::local::stream_protocol::endpoint(std::string(1, '\0') +
+                                                       socket_path)));
         } catch (const std::system_error&) {
             socket = Socket(socket.get_executor());
             socket.connect(asio::generic::stream_protocol::endpoint(
@@ -135,12 +133,11 @@ void connect_to_x11_server(Socket& socket) {
         }
     } else {
         asio::ip::tcp::resolver resolver(socket.get_executor());
-        const auto results = resolver.resolve(
-            host, std::to_string(6000 + display_number),
-            asio::ip::tcp::resolver::numeric_service);
+        const auto results =
+            resolver.resolve(host, std::to_string(6000 + display_number),
+                             asio::ip::tcp::resolver::numeric_service);
 
-        std::error_code err =
-            std::make_error_code(std::errc::host_unreachable);
+        std::error_code err = std::make_error_code(std::errc::host_unreachable);
         for (const auto& result : results) {
             socket = Socket(socket.get_executor());
             socket.connect(
@@ -182,8 +179,7 @@ X11Relay::~X11Relay() noexcept {
 }
 
 void X11Relay::accept_connections() {
-    acceptor_.async_accept([this](const std::error_code& error,
-                                  Socket client) {
+    acceptor_.async_accept([this](const std::error_code& error, Socket client) {
         if (error) {
             if (error != asio::error::operation_aborted) {
                 logger_.log("X11 relay: failure while accepting connections: " +

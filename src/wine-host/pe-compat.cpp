@@ -61,12 +61,12 @@ extern "C" long __attribute__((cdecl)) yabridge_raw_int80(long number,
  * to 1 (`SYSCALL_DISPATCH_FILTER_BLOCK`) right after it. See
  * `get_syscall_dispatch_selector()`.
  */
-extern "C" long __attribute__((cdecl))
-yabridge_raw_int80_dispatch(long number,
-                            long arg1,
-                            long arg2,
-                            long arg3,
-                            volatile unsigned char* selector);
+extern "C" long __attribute__((cdecl)) yabridge_raw_int80_dispatch(
+    long number,
+    long arg1,
+    long arg2,
+    long arg3,
+    volatile unsigned char* selector);
 
 // cdecl: the arguments are on the stack, and `%ebx` and `%esi` must be
 // preserved
@@ -225,8 +225,8 @@ std::wstring utf8_to_wide(const std::string& str) {
         return std::wstring();
     }
 
-    const int size = MultiByteToWideChar(CP_UTF8, 0, str.data(),
-                                         static_cast<int>(str.size()), nullptr, 0);
+    const int size = MultiByteToWideChar(
+        CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
     std::wstring result(size, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()),
                         result.data(), size);
@@ -263,8 +263,8 @@ WCHAR* wine_get_dos_file_name(const char* unix_path) {
     // This is either not a Unix path or we're not running under Wine, so we'll
     // just return a copy of the path
     const std::wstring wide_path = utf8_to_wide(unix_path ? unix_path : "");
-    WCHAR* result = static_cast<WCHAR*>(HeapAlloc(
-        GetProcessHeap(), 0, (wide_path.size() + 1) * sizeof(WCHAR)));
+    WCHAR* result = static_cast<WCHAR*>(
+        HeapAlloc(GetProcessHeap(), 0, (wide_path.size() + 1) * sizeof(WCHAR)));
     if (result) {
         std::memcpy(result, wide_path.c_str(),
                     (wide_path.size() + 1) * sizeof(WCHAR));
@@ -333,17 +333,16 @@ bool linux_set_thread_realtime(bool sched_fifo, int priority) noexcept {
     } params{.sched_priority = sched_fifo ? priority : 0};
 
     // A PID of 0 means the calling thread
-    const std::optional<long> result = linux_syscall(
-        sys_sched_setscheduler, 0,
-        sched_fifo ? linux_sched_fifo : linux_sched_other,
-        reinterpret_cast<long>(&params));
+    const std::optional<long> result =
+        linux_syscall(sys_sched_setscheduler, 0,
+                      sched_fifo ? linux_sched_fifo : linux_sched_other,
+                      reinterpret_cast<long>(&params));
 
     return result && *result == 0;
 }
 
 std::optional<int> linux_get_thread_realtime_priority() noexcept {
-    const std::optional<long> policy =
-        linux_syscall(sys_sched_getscheduler, 0);
+    const std::optional<long> policy = linux_syscall(sys_sched_getscheduler, 0);
     if (!policy || *policy != linux_sched_fifo) {
         return std::nullopt;
     }

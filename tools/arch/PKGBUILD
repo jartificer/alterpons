@@ -1,0 +1,70 @@
+# Builds this fork of yabridge on Arch Linux, including the 32-bit plugin host
+# that works with the WoW64 `wine` and `wine-staging` packages.
+#
+# Usage, from this directory:
+#
+#   makepkg -si
+#
+# This builds the version of yabridge in the repository this file is part of.
+# Set `_branch` below to build a different branch.
+
+pkgname=yabridge-wow64-git
+pkgver=5.1.1
+pkgrel=1
+pkgdesc="Use Windows VST2, VST3, and CLAP plugins in Linux plugin hosts, with 32-bit plugin support for WoW64 Wine"
+arch=('x86_64')
+url="https://github.com/jartificer/yabridge-custom"
+license=('GPL-3.0-or-later')
+depends=('wine' 'libxcb' 'dbus' 'gcc-libs')
+makedepends=('git' 'meson' 'ninja' 'cmake' 'mingw-w64-gcc' 'cargo')
+provides=('yabridge' 'yabridgectl')
+conflicts=('yabridge' 'yabridgectl' 'yabridge-bin' 'yabridge-git')
+# LTO doesn't work for Winelib applications
+options=('!lto' '!debug')
+_branch=ccr-6ad5fb36-4f7by3
+source=("$pkgname::git+$url.git#branch=$_branch")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$pkgname"
+  printf "5.1.1.r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd "$pkgname"
+
+  # The native plugin libraries and the 64-bit Winelib plugin host
+  meson setup build --buildtype=release --cross-file=cross-wine.conf \
+    --unity=on --unity-size=1000 --wrap-mode=default
+  ninja -C build
+
+  # The 32-bit plugin host is a regular 32-bit Windows executable, built using
+  # MinGW. This needs its own build directory.
+  meson setup build-32 --buildtype=release --cross-file=cross-mingw-i686.conf \
+    --unity=on --unity-size=1000 --wrap-mode=default
+  ninja -C build-32
+
+  cd tools/yabridgectl
+  export RUSTUP_TOOLCHAIN=stable
+  cargo build --release --locked
+}
+
+check() {
+  cd "$pkgname"
+
+  # Make sure the 32-bit host is actually a 32-bit PE executable
+  [[ $(head -c 2 build-32/yabridge-host-32.exe) == MZ ]]
+}
+
+package() {
+  cd "$pkgname"
+
+  install -Dm755 build/yabridge-host.exe "$pkgdir/usr/bin/yabridge-host.exe"
+  install -Dm755 build/yabridge-host.exe.so "$pkgdir/usr/bin/yabridge-host.exe.so"
+  install -Dm755 build-32/yabridge-host-32.exe "$pkgdir/usr/bin/yabridge-host-32.exe"
+  install -Dm755 -t "$pkgdir/usr/lib" build/libyabridge-*.so
+  install -Dm755 tools/yabridgectl/target/release/yabridgectl "$pkgdir/usr/bin/yabridgectl"
+
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 CHANGELOG.md "$pkgdir/usr/share/doc/$pkgname/CHANGELOG.md"
+}

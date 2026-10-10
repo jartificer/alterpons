@@ -43,9 +43,11 @@ pub const VST2_CHAINLOADER_NAME: &str = "libyabridge-chainloader-vst2.so";
 pub const VST3_CHAINLOADER_NAME: &str = "libyabridge-chainloader-vst3.so";
 /// The name of the script we're going to run to verify that everything's working correctly.
 pub const YABRIDGE_HOST_EXE_NAME: &str = "yabridge-host.exe";
-/// The 32-bit verison of `YABRIDGE_HOST_EXE_NAME`. If `~/.wine` was somehow created with
-/// `WINEARCH=win32` set, then it won't be possible to run the 64-bit `yabridge-host.exe` in there.
-/// In that case we'll just run the 32-bit version isntead, if it exists.
+/// The 32-bit verison of `YABRIDGE_HOST_EXE_NAME`. This is a regular 32-bit Windows executable
+/// rather than a Winelib application, so it needs to be run through `wine`. If `~/.wine` was
+/// somehow created with `WINEARCH=win32` set, then it won't be possible to run the 64-bit
+/// `yabridge-host.exe` in there. In that case we'll just run the 32-bit version isntead, if it
+/// exists.
 pub const YABRIDGE_HOST_32_EXE_NAME: &str = "yabridge-host-32.exe";
 /// The name of the XDG base directory prefix for yabridge's own files, relative to
 /// `$XDG_CONFIG_HOME` and `$XDG_DATA_HOME`.
@@ -156,11 +158,9 @@ pub struct YabridgeFiles {
     /// The actual Winelib binary for `yabridge-host.exe`. Will be hashed to check whether the user
     /// has updated yabridge.
     pub yabridge_host_exe_so: Option<PathBuf>,
-    /// The same as `yabridge_host_exe`, but for the 32-bit verison.
+    /// The same as `yabridge_host_exe`, but for the 32-bit verison. This is a regular Windows
+    /// executable, so there's no accompanying `.exe.so` file.
     pub yabridge_host_32_exe: Option<PathBuf>,
-    /// The same as `yabridge_host_exe_so`, but for the 32-bit verison. We will hash this instead of
-    /// there's no 64-bit version available.
-    pub yabridge_host_32_exe_so: Option<PathBuf>,
 }
 
 impl Default for Vst2InstallationLocation {
@@ -314,10 +314,6 @@ impl Config {
             .map(|path| path.with_extension("exe.so"))
             .filter(|path| path.exists());
         let yabridge_host_32_exe = which(YABRIDGE_HOST_32_EXE_NAME).ok();
-        let yabridge_host_32_exe_so = yabridge_host_32_exe
-            .as_ref()
-            .map(|path| path.with_extension("exe.so"))
-            .filter(|path| path.exists());
 
         Ok(YabridgeFiles {
             vst2_chainloader,
@@ -327,7 +323,6 @@ impl Config {
             yabridge_host_exe,
             yabridge_host_exe_so,
             yabridge_host_32_exe,
-            yabridge_host_32_exe_so,
         })
     }
 

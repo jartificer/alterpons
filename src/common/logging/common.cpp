@@ -173,8 +173,8 @@ Logger Logger::create_from_environment(std::string prefix,
             // unaffected, so we can still write there without causing infinite
             // loops.
 #ifdef YABRIDGE_PE_HOST
-            stream = std::make_shared<HandleOStream>(
-                GetStdHandle(STD_ERROR_HANDLE));
+            stream =
+                std::make_shared<HandleOStream>(GetStdHandle(STD_ERROR_HANDLE));
 #else
             stream = std::make_shared<std::ofstream>(
                 "/dev/stderr", std::fstream::out | std::fstream::app);

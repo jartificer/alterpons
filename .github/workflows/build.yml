@@ -19,44 +19,54 @@ defaults:
     shell: bash
 
 jobs:
-  build-focal:
-    name: Build on Ubuntu 20.04
-    runs-on: ubuntu-latest
-    container: robbert/docker-yabridge:focal
+  build:
+    name: Build on Ubuntu 24.04
+    runs-on: ubuntu-24.04
     outputs:
       artifact-name: ${{ env.ARCHIVE_NAME }}
     steps:
-      - uses: actions/checkout@v7
-      # Needed for git-describe to do anything useful, the safe directory
-      # workaround is needed for https://github.com/actions/runner/issues/2033
+      - uses: actions/checkout@v4
+      # Needed for git-describe to do anything useful
       - name: Fetch all git history
-        run: |
-          git config --global --add safe.directory /__w/yabridge/yabridge
-          git fetch --force --prune --tags --unshallow
+        run: git fetch --force --prune --tags --unshallow
       - name: Determine build archive name
         run: |
           echo "ARCHIVE_NAME=yabridge-$(git describe --always).tar.gz" >> "$GITHUB_ENV"
-      - name: Build the binaries
+      - name: Install dependencies
         run: |
-          mkdir -p /tmp/prefix
-          export WINEPREFIX=/tmp/prefix
-
-          # In this version we don't need to statically link libstdc++ since
-          # Ubuntu 20.04 and similar distros will ship with a version that's
-          # compatible with GCC 10, even if that's not the default GCC version
-          meson setup build --buildtype=release --cross-file=cross-wine.conf --unity=on --unity-size=10000 -Dbitbridge=true
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            meson ninja-build cmake pkg-config g++ \
+            libxcb1-dev libdbus-1-dev \
+            wine64 wine32:i386 wine64-tools libwine-dev \
+            g++-mingw-w64-i686-posix g++-mingw-w64-x86-64-posix \
+            xvfb
+      - name: Build the native libraries and the 64-bit plugin host
+        run: |
+          meson setup build --buildtype=release --cross-file=cross-wine.conf --unity=on --unity-size=10000
           ninja -C build
+      - name: Build the 32-bit plugin host
+        run: |
+          meson setup build-32 --buildtype=release --cross-file=cross-mingw-i686-posix.conf --unity=on --unity-size=10000
+          ninja -C build-32
+      - name: Run the smoke test
+        env:
+          MINGW_SUFFIX: -posix
+        run: xvfb-run -a tools/smoke-test/run-smoke-test.sh build build-32
       - name: Strip remaining debug symbols
-        run: strip build/libyabridge{,-chainloader}-{clap,vst2,vst3}.so build/yabridge-host{,-32}.exe.so
+        run: |
+          strip build/libyabridge{,-chainloader}-{clap,vst2,vst3}.so build/yabridge-host.exe.so
+          i686-w64-mingw32-strip build-32/yabridge-host-32.exe
       - name: Create an archive for the binaries
         run: |
           mkdir yabridge
-          cp build/libyabridge{,-chainloader}-{clap,vst2,vst3}.so build/yabridge-host{,-32}.exe{,.so} yabridge
+          cp build/libyabridge{,-chainloader}-{clap,vst2,vst3}.so build/yabridge-host.exe{,.so} build-32/yabridge-host-32.exe yabridge
           cp CHANGELOG.md README.md yabridge
 
           tar -caf "$ARCHIVE_NAME" yabridge
           rm -rf yabridge
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARCHIVE_NAME }}
           path: ${{ env.ARCHIVE_NAME }}

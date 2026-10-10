@@ -8,6 +8,47 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- 32-bit Windows plugins now work with Wine's new WoW64 mode, which is what
+  Arch Linux' `wine` and `wine-staging` packages use. The 32-bit plugin host
+  (`yabridge-host-32.exe`) is now built as a regular 32-bit Windows executable
+  using MinGW-w64 instead of as a 32-bit Winelib application, since WoW64 Wine
+  builds no longer have a 32-bit Linux side. This host is built in a separate
+  build directory using the new `cross-mingw-i686.conf` cross file. See the
+  readme for instructions. This host also still works with old style WoW64
+  Wine builds. Because of this:
+  - The 32-bit host communicates with the native plugin over authenticated
+    loopback TCP sockets, since Wine's Winsock does not support Unix domain
+    sockets.
+  - Audio buffers are shared using Win32 file mappings of the same `/dev/shm`
+    files the native plugin uses.
+  - X11 connections for editor embedding and drag-and-drop are relayed through
+    the native plugin, and the 32-bit host contains a minimal implementation of
+    the parts of libxcb yabridge uses.
+  - Realtime scheduling for the 32-bit host's audio threads is requested
+    through a direct Linux system call. Set `YABRIDGE_NO_LINUX_SYSCALLS=1` to
+    disable this.
+- An Arch Linux `PKGBUILD` in `tools/arch` that builds and installs yabridge,
+  including the 32-bit host and `yabridgectl`.
+- An end-to-end smoke test in `tools/smoke-test` that tests both plugin hosts,
+  including 32-bit and 64-bit plugins running at the same time.
+
+### Changed
+
+- Messages are now sent using a single gather write instead of two separate
+  writes.
+
+### Removed
+
+- The 32-bit Winelib plugin host. The `bitbridge` build option no longer builds
+  anything, use the `cross-mingw-i686.conf` cross file instead.
+
+### yabridgectl
+
+- `yabridgectl status` and the post-sync checks now handle the 32-bit host
+  being a regular Windows executable without an accompanying `.exe.so` file.
+
 ### Fixed
 
 - Fixed a compatibility issue with **Wine 9.22** and above that caused mouse

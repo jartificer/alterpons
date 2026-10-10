@@ -67,14 +67,12 @@ class Vst3Sockets final : public Sockets {
                 bool listen,
                 SocketTransport transport = default_socket_transport)
         : Sockets(endpoint_base_dir, transport),
-          host_plugin_control_(
-              io_context,
-              endpoint("host_plugin_control.sock"),
-              listen),
-          plugin_host_callback_(
-              io_context,
-              endpoint("plugin_host_callback.sock"),
-              listen),
+          host_plugin_control_(io_context,
+                               endpoint("host_plugin_control.sock"),
+                               listen),
+          plugin_host_callback_(io_context,
+                                endpoint("plugin_host_callback.sock"),
+                                listen),
           io_context_(io_context) {}
 
     // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
@@ -110,7 +108,7 @@ class Vst3Sockets final : public Sockets {
         audio_processor_sockets_.try_emplace(
             instance_id, io_context_,
             endpoint("host_plugin_audio_processor_" +
-                          std::to_string(instance_id) + ".sock"),
+                     std::to_string(instance_id) + ".sock"),
             false);
 
         audio_processor_sockets_.at(instance_id).connect();
@@ -143,7 +141,7 @@ class Vst3Sockets final : public Sockets {
             audio_processor_sockets_.try_emplace(
                 instance_id, io_context_,
                 endpoint("host_plugin_audio_processor_" +
-                              std::to_string(instance_id) + ".sock"),
+                         std::to_string(instance_id) + ".sock"),
                 true);
         }
 

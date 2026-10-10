@@ -19,12 +19,18 @@
 // changes a parameter, fetches a state chunk, and optionally opens the editor
 // to check that the Wine window gets embedded.
 //
-// Usage: test-host <plugin.so> [--editor] [--blocks N]
+// Usage: test-host <plugin.so> [--editor] [--blocks N] [--alongside <other.so>]
+//
+// With `--alongside`, the other plugin is loaded into the same process first
+// and it will be processing audio on a background thread while the main
+// plugin is being tested. This is used to test 32-bit and 64-bit plugins
+// running at the same time.
 
 #include <dlfcn.h>
 #include <xcb/xcb.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -132,8 +138,8 @@ void test_editor(AEffect* effect) {
     const xcb_screen_t* screen =
         xcb_setup_roots_iterator(xcb_get_setup(connection)).data;
     const xcb_window_t window = xcb_generate_id(connection);
-    xcb_create_window(connection, XCB_COPY_FROM_PARENT, window, screen->root,
-                      0, 0, 400, 300, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
+    xcb_create_window(connection, XCB_COPY_FROM_PARENT, window, screen->root, 0,
+                      0, 400, 300, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
                       screen->root_visual, 0, nullptr);
     xcb_map_window(connection, window);
     xcb_flush(connection);
@@ -181,12 +187,15 @@ void test_editor(AEffect* effect) {
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <plugin.so> [--editor] [--blocks N]\n",
+        fprintf(stderr,
+                "Usage: %s <plugin.so> [--editor] [--blocks N] [--alongside "
+                "<other.so>]\n",
                 argv[0]);
         return 2;
     }
 
     const std::string plugin_path = argv[1];
+    std::string alongside_path;
     bool with_editor = false;
     int num_blocks = 1000;
     for (int i = 2; i < argc; i++) {
@@ -194,7 +203,59 @@ int main(int argc, char* argv[]) {
             with_editor = true;
         } else if (strcmp(argv[i], "--blocks") == 0 && i + 1 < argc) {
             num_blocks = std::stoi(argv[++i]);
+        } else if (strcmp(argv[i], "--alongside") == 0 && i + 1 < argc) {
+            alongside_path = argv[++i];
         }
+    }
+
+    using VstEntry = AEffect* (*)(audioMasterCallback);
+
+    // The other plugin processes audio on a background thread for the entire
+    // duration of the test
+    void* alongside_library = nullptr;
+    AEffect* alongside_effect = nullptr;
+    std::jthread alongside_thread;
+    std::atomic_int alongside_blocks = 0;
+    std::atomic_bool alongside_correct = true;
+    if (!alongside_path.empty()) {
+        alongside_library =
+            dlopen(alongside_path.c_str(), RTLD_NOW | RTLD_LOCAL);
+        auto alongside_entry = alongside_library
+                                   ? reinterpret_cast<VstEntry>(dlsym(
+                                         alongside_library, "VSTPluginMain"))
+                                   : nullptr;
+        alongside_effect =
+            alongside_entry ? alongside_entry(host_callback) : nullptr;
+        check(alongside_effect != nullptr,
+              "The other plugin (" + alongside_path + ") initialized");
+        if (!alongside_effect) {
+            return 1;
+        }
+
+        char name[256] = {};
+        alongside_effect->dispatcher(alongside_effect, effOpen, 0, 0, nullptr,
+                                     0.0f);
+        alongside_effect->dispatcher(alongside_effect, effGetEffectName, 0, 0,
+                                     name, 0.0f);
+        printf("       Running '%s' alongside the main plugin\n", name);
+        alongside_effect->dispatcher(alongside_effect, effSetSampleRate, 0, 0,
+                                     nullptr, sample_rate);
+        alongside_effect->dispatcher(alongside_effect, effSetBlockSize, 0,
+                                     block_size, nullptr, 0.0f);
+        alongside_effect->dispatcher(alongside_effect, effMainsChanged, 0, 1,
+                                     nullptr, 0.0f);
+
+        alongside_thread = std::jthread([&](std::stop_token stop_token) {
+            for (int i = 0; !stop_token.stop_requested(); i++) {
+                bool correct;
+                process_block(alongside_effect, 0.5f, i, correct);
+                if (!correct) {
+                    alongside_correct = false;
+                }
+                alongside_blocks++;
+                std::this_thread::sleep_for(5ms);
+            }
+        });
     }
 
     void* library = dlopen(plugin_path.c_str(), RTLD_NOW | RTLD_LOCAL);
@@ -204,7 +265,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    using VstEntry = AEffect* (*)(audioMasterCallback);
     auto entry = reinterpret_cast<VstEntry>(dlsym(library, "VSTPluginMain"));
     check(entry != nullptr, "The plugin exports VSTPluginMain()");
     if (!entry) {
@@ -260,7 +320,8 @@ int main(int argc, char* argv[]) {
     const auto percentile = [&](double p) {
         return block_times_us[std::min(
             block_times_us.size() - 1,
-            static_cast<size_t>(p * static_cast<double>(block_times_us.size())))];
+            static_cast<size_t>(p *
+                                static_cast<double>(block_times_us.size())))];
     };
     printf(
         "       Processing round trip: median %.1f us, p99 %.1f us, max %.1f "
@@ -278,9 +339,8 @@ int main(int argc, char* argv[]) {
     void* chunk_data = nullptr;
     const intptr_t chunk_size =
         effect->dispatcher(effect, effGetChunk, 0, 0, &chunk_data, 0.0f);
-    bool chunk_correct = chunk_data && chunk_size ==
-                                           static_cast<intptr_t>(
-                                               expected_chunk_size);
+    bool chunk_correct =
+        chunk_data && chunk_size == static_cast<intptr_t>(expected_chunk_size);
     for (size_t i = 0; chunk_correct && i < expected_chunk_size; i++) {
         chunk_correct = static_cast<unsigned char*>(chunk_data)[i] ==
                         static_cast<unsigned char>(i * 7);
@@ -294,6 +354,21 @@ int main(int argc, char* argv[]) {
     effect->dispatcher(effect, effMainsChanged, 0, 0, nullptr, 0.0f);
     effect->dispatcher(effect, effClose, 0, 0, nullptr, 0.0f);
     dlclose(library);
+
+    if (alongside_effect) {
+        alongside_thread.request_stop();
+        alongside_thread.join();
+        check(alongside_correct && alongside_blocks > 0,
+              "The other plugin correctly processed " +
+                  std::to_string(alongside_blocks) +
+                  " blocks at the same time");
+
+        alongside_effect->dispatcher(alongside_effect, effMainsChanged, 0, 0,
+                                     nullptr, 0.0f);
+        alongside_effect->dispatcher(alongside_effect, effClose, 0, 0, nullptr,
+                                     0.0f);
+        dlclose(alongside_library);
+    }
 
     if (failures > 0) {
         printf("\n%d check(s) failed\n", failures);

@@ -155,8 +155,7 @@ pub fn show_status(config: &Config) -> Result<()> {
                 files
                     .yabridge_host_32_exe
                     .as_ref()
-                    .zip(files.yabridge_host_32_exe_so.as_ref())
-                    .map(|(path, _)| format!("'{}'", path.display()))
+                    .map(|path| format!("'{}'", path.display()))
                     .unwrap_or_else(|| "<not found>".red().to_string())
             );
         }
