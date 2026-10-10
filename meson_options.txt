@@ -1,0 +1,27 @@
+option(
+  'bitbridge',
+  type : 'boolean',
+  value : false,
+  description : 'Build a 32-bit host application for hosting 32-bit plugins. See the readme for full instructions on how to use this.'
+)
+
+option(
+  'clap',
+  type : 'boolean',
+  value : true,
+  description : 'Whether to build the CLAP version of yabridge.'
+)
+
+option(
+  'vst3',
+  type : 'boolean',
+  value : true,
+  description : 'Whether to build the VST3 version of yabridge.'
+)
+
+option(
+  'winedbg',
+  type : 'boolean',
+  value : false,
+  description : 'Whether to run the Wine plugin host with GDB attached. Might not always be reliable.'
+)
