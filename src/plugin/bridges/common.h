@@ -402,7 +402,13 @@ class PluginBridge {
                         "see the error.",
                         info_.native_library_path_);
 
-                    std::terminate();
+                    // Upstream yabridge used to call `std::terminate()` here,
+                    // which would also take down the plugin host (e.g. the
+                    // DAW). Instead we'll make `sockets_.connect()` below
+                    // throw, so the plugin fails to load like any other
+                    // plugin that fails to initialize.
+                    sockets_.abort_connect();
+                    return;
                 }
 
                 std::this_thread::sleep_for(20ms);
@@ -410,7 +416,18 @@ class PluginBridge {
         });
 #endif
 
-        sockets_.connect();
+        try {
+            sockets_.connect();
+        } catch (const std::system_error& error) {
+            if (error.code() ==
+                std::make_error_code(std::errc::operation_canceled)) {
+                throw std::runtime_error(
+                    "The Wine plugin host exited before it could connect to "
+                    "yabridge. Check the output above for more information.");
+            }
+
+            throw;
+        }
 #ifndef WITH_WINEDBG
         host_watchdog_handler_.request_stop();
 #endif

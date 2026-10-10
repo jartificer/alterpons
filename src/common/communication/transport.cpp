@@ -539,8 +539,35 @@ void SocketEndpoint::finish_accept(Socket& socket) const {
     }
 }
 
-void SocketEndpoint::accept(SocketAcceptor& acceptor, Socket& socket) const {
+void SocketEndpoint::accept(SocketAcceptor& acceptor,
+                            Socket& socket,
+                            const std::atomic_bool* abort) const {
     while (true) {
+        // When we can be aborted, we'll wait for incoming connections in small
+        // increments so we can check whether we should stop waiting
+        if (abort) {
+            while (true) {
+                if (*abort) {
+                    throw std::system_error(
+                        std::make_error_code(std::errc::operation_canceled),
+                        "Stopped waiting for a connection on '" + path_ + "'");
+                }
+
+                std::error_code err;
+                const int ready = asio::detail::socket_ops::poll_read(
+                    acceptor.native_handle(), 0, 100, err);
+                if (err) {
+                    throw std::system_error(err,
+                                            "Error while waiting for a "
+                                            "connection on '" +
+                                                path_ + "'");
+                }
+                if (ready > 0) {
+                    break;
+                }
+            }
+        }
+
         // If the acceptor gets closed, then this will throw
         acceptor.accept(socket);
 

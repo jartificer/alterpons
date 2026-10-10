@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <system_error>
@@ -240,8 +241,15 @@ class SocketEndpoint {
      * Accept a single connection on `acceptor` and finish the handshake. Any
      * connection that fails to authenticate is dropped, and we'll wait for the
      * next connection instead.
+     *
+     * @param abort If this is set and it becomes `true` while we're waiting for
+     *   a connection, then this will stop waiting and throw a
+     *   `std::system_error` with `std::errc::operation_canceled`. Used during
+     *   startup so we don't wait forever when the Wine plugin host has died.
      */
-    void accept(SocketAcceptor& acceptor, Socket& socket) const;
+    void accept(SocketAcceptor& acceptor,
+                Socket& socket,
+                const std::atomic_bool* abort = nullptr) const;
 
     /**
      * Remove the socket or port file, if it exists. Never throws.
