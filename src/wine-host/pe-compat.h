@@ -68,9 +68,16 @@ bool linux_pid_running(int pid);
  * the instruction would fault. We install a vectored exception handler to
  * catch that, and this function will then return a nullopt.
  *
+ * Wine on x86_64 traps system calls made from Windows code using syscall user
+ * dispatch, so this temporarily disables that for the duration of the system
+ * call. Because a signal handler could re-enable trapping, and the kernel
+ * restarts interrupted system calls by executing the instruction again, this
+ * should only be used for short, non-blocking system calls.
+ *
  * This is only used for things Wine does not provide an API for, like setting
  * realtime scheduling priorities. Returns the raw syscall result (a negative
- * value indicates an `-errno`).
+ * value indicates an `-errno`). Setting `YABRIDGE_NO_LINUX_SYSCALLS=1`
+ * disables this.
  */
 std::optional<long> linux_syscall(long number,
                                   long arg1 = 0,

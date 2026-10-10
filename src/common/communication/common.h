@@ -147,10 +147,15 @@ inline void write_object(Socket& socket,
     //       bit bridge. This won't make any function difference aside from the
     //       32-bit host application having to convert between 64 and 32 bit
     //       integers.
-    asio::write(socket, asio::buffer(std::array<uint64_t, 1>{size}));
-    const size_t bytes_written =
-        asio::write(socket, asio::buffer(buffer, size));
-    assert(bytes_written == size);
+    //
+    // The size and the object are sent using a single gather write. Besides
+    // saving a system call, this matters a lot for the 32-bit PE host, since
+    // every Winsock operation in Wine involves a round trip to wineserver.
+    const std::array<uint64_t, 1> size_buffer{size};
+    const std::array<asio::const_buffer, 2> buffers{
+        asio::buffer(size_buffer), asio::buffer(buffer.data(), size)};
+    const size_t bytes_written = asio::write(socket, buffers);
+    assert(bytes_written == sizeof(size_buffer) + size);
 }
 
 /**

@@ -55,6 +55,13 @@ Process::Handle HostProcess::launch_host(
     child.arg(winedbg_target);
 #endif  // WINEDBG_LEGACY_ARGUMENT_QUOTING
 #else
+    // NOTE: With a 64-bit Wine loader (which is always the case with WoW64
+    //       Wine builds), Wine launches 32-bit executables through
+    //       `start.exe /exec`. The process we spawn is then `start.exe`, which
+    //       waits for the actual host process and forwards its exit code. It
+    //       also puts the host in a job object that gets terminated when
+    //       `start.exe` gets killed, so `IndividualHost::running()` and
+    //       `IndividualHost::terminate()` still work as expected.
     Process child(launch_through_wine ? get_wine_loader() : host_path.string());
     if (launch_through_wine) {
         child.arg(host_path.string());

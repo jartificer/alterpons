@@ -18,6 +18,8 @@
 
 #include <cstdint>
 #include <string>
+#include <system_error>
+#include <vector>
 
 #ifdef __WINE__
 #include "../../wine-host/use-linux-asio.h"
@@ -25,6 +27,7 @@
 #include <asio/generic/stream_protocol.hpp>
 #include <asio/io_context.hpp>
 #include <asio/ip/tcp.hpp>
+#include <asio/buffer.hpp>
 #include <asio/socket_base.hpp>
 
 /**
@@ -59,12 +62,99 @@ constexpr SocketTransport default_socket_transport =
     SocketTransport::unix_domain;
 #endif
 
+#ifdef YABRIDGE_PE_HOST
+/**
+ * A stream socket with a read-ahead buffer. In Wine every Winsock operation
+ * involves at least one round trip to wineserver, which makes them a lot more
+ * expensive than regular Linux system calls. `read_object()` reads an object's
+ * size and then the object itself, and since `write_object()` sends both in a
+ * single write, reading as much as possible at once lets us receive most
+ * messages with a single `recv()` call. Any bytes that have been read ahead are
+ * stored in the socket object itself, so they won't be lost.
+ */
+class BufferedSocket : public asio::generic::stream_protocol::socket {
+   public:
+    using Base = asio::generic::stream_protocol::socket;
+    using Base::Base;
+
+    // NOLINTNEXTLINE(google-explicit-constructor)
+    BufferedSocket(Base&& socket) : Base(std::move(socket)) {}
+
+    BufferedSocket(BufferedSocket&&) = default;
+    BufferedSocket& operator=(BufferedSocket&&) = default;
+
+    template <typename MutableBufferSequence>
+    size_t read_some(const MutableBufferSequence& buffers,
+                     std::error_code& ec) {
+        ec = std::error_code();
+        const size_t requested_size = asio::buffer_size(buffers);
+        if (requested_size == 0) {
+            return 0;
+        }
+
+        if (read_ahead_start_ == read_ahead_end_) {
+            // Large reads bypass the buffer entirely
+            if (requested_size >= read_ahead_buffer_size) {
+                return Base::read_some(buffers, ec);
+            }
+
+            if (read_ahead_.empty()) {
+                read_ahead_.resize(read_ahead_buffer_size);
+            }
+            read_ahead_start_ = 0;
+            read_ahead_end_ =
+                Base::read_some(asio::buffer(read_ahead_), ec);
+            if (ec) {
+                read_ahead_end_ = 0;
+                return 0;
+            }
+        }
+
+        const size_t bytes_copied = asio::buffer_copy(
+            buffers, asio::buffer(read_ahead_.data() + read_ahead_start_,
+                                  read_ahead_end_ - read_ahead_start_));
+        read_ahead_start_ += bytes_copied;
+
+        return bytes_copied;
+    }
+
+    template <typename MutableBufferSequence>
+    size_t read_some(const MutableBufferSequence& buffers) {
+        std::error_code ec;
+        const size_t bytes_read = read_some(buffers, ec);
+        if (ec) {
+            throw std::system_error(ec, "read_some");
+        }
+
+        return bytes_read;
+    }
+
+    size_t available() {
+        return (read_ahead_end_ - read_ahead_start_) + Base::available();
+    }
+
+   private:
+    static constexpr size_t read_ahead_buffer_size = 64 * 1024;
+
+    std::vector<uint8_t> read_ahead_;
+    size_t read_ahead_start_ = 0;
+    size_t read_ahead_end_ = 0;
+};
+
+/**
+ * The socket type used for all communication. In the PE host this is a
+ * buffered TCP socket, see above.
+ */
+using Socket = BufferedSocket;
+#else
 /**
  * The socket type used for all communication. This is a protocol-agnostic
  * stream socket that can hold either a Unix domain socket or a TCP socket.
  */
 using Socket = asio::generic::stream_protocol::socket;
-using SocketAcceptor = asio::basic_socket_acceptor<asio::generic::stream_protocol>;
+#endif
+using SocketAcceptor =
+    asio::basic_socket_acceptor<asio::generic::stream_protocol>;
 
 /**
  * The environment variable used to pass the TCP authentication token to the

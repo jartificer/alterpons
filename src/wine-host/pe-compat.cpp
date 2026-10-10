@@ -17,6 +17,7 @@
 #include "pe-compat.h"
 
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -39,21 +40,36 @@ constexpr long linux_sched_fifo = 1;
 constexpr long linux_enosys = 38;
 
 /**
- * The `int 0x80` instruction used by `linux_syscall()`. The exception handler
- * uses this to make sure it only handles faults caused by our system calls.
+ * The `int 0x80` instructions used by `linux_syscall()`. The exception handler
+ * uses these to make sure it only handles faults caused by our system calls.
  */
 extern "C" const unsigned char yabridge_int80_instruction[];
+extern "C" const unsigned char yabridge_int80_dispatch_instruction[];
 
 /**
- * Perform the actual system call. This is defined in assembly below so we know
- * the exact address of the `int 0x80` instruction.
+ * Perform the actual system call. These are defined in assembly below so we
+ * know the exact address of the `int 0x80` instruction.
  */
 extern "C" long __attribute__((cdecl)) yabridge_raw_int80(long number,
                                                           long arg1,
                                                           long arg2,
                                                           long arg3);
 
-// cdecl: the arguments are on the stack, and `%ebx` must be preserved
+/**
+ * The same as `yabridge_raw_int80()`, but this sets the byte at `selector` to
+ * 0 (`SYSCALL_DISPATCH_FILTER_ALLOW`) right before the system call, and back
+ * to 1 (`SYSCALL_DISPATCH_FILTER_BLOCK`) right after it. See
+ * `get_syscall_dispatch_selector()`.
+ */
+extern "C" long __attribute__((cdecl))
+yabridge_raw_int80_dispatch(long number,
+                            long arg1,
+                            long arg2,
+                            long arg3,
+                            volatile unsigned char* selector);
+
+// cdecl: the arguments are on the stack, and `%ebx` and `%esi` must be
+// preserved
 asm(R"(
     .text
     .globl _yabridge_raw_int80
@@ -68,7 +84,91 @@ _yabridge_int80_instruction:
     int $0x80
     popl %ebx
     ret
+
+    .globl _yabridge_raw_int80_dispatch
+    .globl _yabridge_int80_dispatch_instruction
+_yabridge_raw_int80_dispatch:
+    pushl %ebx
+    pushl %esi
+    movl 12(%esp), %eax
+    movl 16(%esp), %ebx
+    movl 20(%esp), %ecx
+    movl 24(%esp), %edx
+    movl 28(%esp), %esi
+    movb $0, (%esi)
+_yabridge_int80_dispatch_instruction:
+    int $0x80
+    movb $1, (%esi)
+    popl %esi
+    popl %ebx
+    ret
 )");
+
+/**
+ * Wine on x86_64 Linux uses the kernel's syscall user dispatch feature to trap
+ * system calls made directly from Windows code, which it then handles as
+ * Windows NT system calls. In Wine's (new) WoW64 mode this also applies to
+ * our 32-bit `int 0x80` system calls, which would then crash the process.
+ * Wine turns this trapping on and off using a per-thread selector byte in its
+ * private part of the 64-bit TEB. For 32-bit code, the 64-bit TEB can be found
+ * using the `WowTebOffset` field in the 32-bit TEB.
+ *
+ * Returns a pointer to the selector if it's currently set to 1
+ * (`SYSCALL_DISPATCH_FILTER_BLOCK`), meaning syscall user dispatch is active.
+ * Returns a null pointer if there is no 64-bit TEB or if the selector is 0,
+ * meaning that system calls can be made as is (old style WoW64, or a kernel
+ * without syscall user dispatch). Returns a nullopt if the selector has some
+ * unexpected value, in which case we should not make any system calls.
+ */
+std::optional<volatile unsigned char*> get_syscall_dispatch_selector() {
+    // The offset of `WowTebOffset` in the 32-bit TEB, and the offset of
+    // `amd64_thread_data()->syscall_dispatch` in Wine's 64-bit TEB. The
+    // latter is checked using a `C_ASSERT()` in Wine's
+    // `dlls/ntdll/unix/signal_x86_64.c`.
+    constexpr size_t wow_teb_offset_offset = 0xfdc;
+    constexpr size_t syscall_dispatch_offset = 0x340;
+
+    // This is `NtCurrentTeb()`, but MinGW's version of that triggers a bogus
+    // `-Warray-bounds` warning
+    const unsigned char* teb32;
+    asm("movl %%fs:0x18, %0" : "=r"(teb32));
+    LONG wow_teb_offset;
+    std::memcpy(&wow_teb_offset, teb32 + wow_teb_offset_offset,
+                sizeof(wow_teb_offset));
+    if (wow_teb_offset == 0) {
+        return nullptr;
+    }
+
+    auto* selector = const_cast<volatile unsigned char*>(
+        teb32 + wow_teb_offset + syscall_dispatch_offset);
+    switch (*selector) {
+        case 0:
+            return nullptr;
+        case 1:
+            return selector;
+        default:
+            return std::nullopt;
+    }
+}
+
+/**
+ * Perform a system call, taking Wine's syscall user dispatch into account.
+ * Returns a nullopt if we can't safely make the system call.
+ */
+std::optional<long> do_syscall(long number,
+                               long arg1,
+                               long arg2,
+                               long arg3) noexcept {
+    const std::optional<volatile unsigned char*> selector =
+        get_syscall_dispatch_selector();
+    if (!selector) {
+        return std::nullopt;
+    } else if (*selector) {
+        return yabridge_raw_int80_dispatch(number, arg1, arg2, arg3, *selector);
+    } else {
+        return yabridge_raw_int80(number, arg1, arg2, arg3);
+    }
+}
 
 /**
  * When the kernel does not support 32-bit system calls, then `int 0x80` will
@@ -77,8 +177,9 @@ _yabridge_int80_instruction:
  */
 LONG CALLBACK int80_exception_handler(EXCEPTION_POINTERS* exception_info) {
     CONTEXT* context = exception_info->ContextRecord;
-    if (context->Eip ==
-        reinterpret_cast<DWORD>(yabridge_int80_instruction)) {
+    if (context->Eip == reinterpret_cast<DWORD>(yabridge_int80_instruction) ||
+        context->Eip ==
+            reinterpret_cast<DWORD>(yabridge_int80_dispatch_instruction)) {
         context->Eip += 2;
         context->Eax = static_cast<DWORD>(-linux_enosys);
 
@@ -97,10 +198,17 @@ bool linux_syscalls_available() noexcept {
     static bool available = false;
 
     std::call_once(once, []() {
+        // This can be used to opt out of this if it ever causes problems
+        // NOLINTNEXTLINE(concurrency-mt-unsafe)
+        if (const char* disable = getenv("YABRIDGE_NO_LINUX_SYSCALLS");
+            disable && disable == std::string("1")) {
+            return;
+        }
+
         AddVectoredExceptionHandler(1, int80_exception_handler);
 
-        const long pid = yabridge_raw_int80(sys_getpid, 0, 0, 0);
-        available = pid > 0;
+        const std::optional<long> pid = do_syscall(sys_getpid, 0, 0, 0);
+        available = pid && *pid > 0;
     });
 
     return available;
@@ -215,7 +323,7 @@ std::optional<long> linux_syscall(long number,
         return std::nullopt;
     }
 
-    return yabridge_raw_int80(number, arg1, arg2, arg3);
+    return do_syscall(number, arg1, arg2, arg3);
 }
 
 bool linux_set_thread_realtime(bool sched_fifo, int priority) noexcept {
