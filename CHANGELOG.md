@@ -42,6 +42,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   instance because Wine could not start in the plugin's Wine prefix, the plugin
   now fails to load instead of yabridge calling `std::terminate()`, which
   crashed the DAW (e.g. REAPER).
+- When the Wine plugin host crashes or exits while a plugin is in use, the
+  plugin now becomes silent and stops responding instead of yabridge throwing
+  an exception into the DAW, which crashed the DAW. yabridge logs an error and
+  shows a desktop notification when this happens.
 
 ### Removed
 

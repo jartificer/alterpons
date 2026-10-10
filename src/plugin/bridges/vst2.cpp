@@ -612,19 +612,39 @@ intptr_t Vst2PluginBridge::dispatch(AEffect* /*plugin*/,
         } break;
     }
 
+    if (host_lost_) {
+        return 0;
+    }
+
     // We don't reuse any buffers here like we do for audio processing. This
     // would be useful for chunk data, but since that's only needed when saving
     // and loading plugin state it's much better to have bitsery or our
     // receiving function temporarily allocate a large enough buffer rather than
     // to have a bunch of allocated memory sitting around doing nothing.
-    return sockets_.host_plugin_dispatch_.send_event(
-        converter, std::pair<Vst2Logger&, bool>(logger_, true), opcode, index,
-        value, data, option);
+    try {
+        return sockets_.host_plugin_dispatch_.send_event(
+            converter, std::pair<Vst2Logger&, bool>(logger_, true), opcode,
+            index, value, data, option);
+    } catch (const std::system_error& error) {
+        handle_lost_host(error);
+        return 0;
+    }
 }
 
 template <typename T, bool replacing>
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 void Vst2PluginBridge::do_process(T** inputs, T** outputs, int sample_frames) {
+    // If the Wine plugin host has crashed, then we'll just output silence
+    if (host_lost_ || !process_buffers_) [[unlikely]] {
+        if constexpr (replacing) {
+            for (int channel = 0; channel < plugin_.numOutputs; channel++) {
+                std::fill_n(outputs[channel], sample_frames, T{});
+            }
+        }
+
+        return;
+    }
+
     // During audio processing we'll write the inputs to shared memory buffers,
     // and we'll then send this request alongside it with additional information
     // needed to process audio
@@ -692,12 +712,18 @@ void Vst2PluginBridge::do_process(T** inputs, T** outputs, int sample_frames) {
     // After writing audio to the shared memory buffers, we'll send the
     // processing request parameters to the Wine plugin host so it can start
     // processing audio. This is why we don't need any explicit synchronisation.
-    sockets_.host_plugin_process_replacing_.send(request);
+    try {
+        sockets_.host_plugin_process_replacing_.send(request);
 
-    // From the Wine side we'll send a zero byte struct back as an
-    // acknowledgement that audio processing has finished. At this point the
-    // audio will have been written to our buffers.
-    sockets_.host_plugin_process_replacing_.receive_single<Ack>();
+        // From the Wine side we'll send a zero byte struct back as an
+        // acknowledgement that audio processing has finished. At this point
+        // the audio will have been written to our buffers.
+        sockets_.host_plugin_process_replacing_.receive_single<Ack>();
+    } catch (const std::system_error& error) {
+        handle_lost_host(error);
+        do_process<T, replacing>(inputs, outputs, sample_frames);
+        return;
+    }
 
     for (int channel = 0; channel < plugin_.numOutputs; channel++) {
         const T* output_channel =
@@ -772,15 +798,21 @@ float Vst2PluginBridge::get_parameter(AEffect* /*plugin*/, int index) {
 
     const Parameter request{index, std::nullopt};
     ParameterResult response;
+    if (host_lost_) {
+        return 0.0f;
+    }
 
     // Prevent race conditions from `getParameter()` and `setParameter()` being
     // called at the same time since  they share the same socket
-    {
+    try {
         std::lock_guard lock(parameters_mutex_);
         sockets_.host_plugin_parameters_.send(request);
 
         response =
             sockets_.host_plugin_parameters_.receive_single<ParameterResult>();
+    } catch (const std::system_error& error) {
+        handle_lost_host(error);
+        return 0.0f;
     }
 
     logger_.log_get_parameter_response(*response.value);
@@ -795,13 +827,19 @@ void Vst2PluginBridge::set_parameter(AEffect* /*plugin*/,
 
     const Parameter request{index, value};
     ParameterResult response;
+    if (host_lost_) {
+        return;
+    }
 
-    {
+    try {
         std::lock_guard lock(parameters_mutex_);
         sockets_.host_plugin_parameters_.send(request);
 
         response =
             sockets_.host_plugin_parameters_.receive_single<ParameterResult>();
+    } catch (const std::system_error& error) {
+        handle_lost_host(error);
+        return;
     }
 
     logger_.log_set_parameter_response();

@@ -142,6 +142,47 @@ class PluginBridge {
 
    protected:
     /**
+     * Call this when communicating with the Wine plugin host fails because the
+     * connection was lost, which means that the Wine plugin host has crashed
+     * or exited. Upstream yabridge would let these exceptions propagate to the
+     * host, which crashes the host (e.g. the DAW). Instead, we'll log this and
+     * show a notification once, and from then on the bridge functions should
+     * no longer try to talk to the Wine plugin host. The plugin then simply
+     * stops doing anything until the host unloads it.
+     */
+    void handle_lost_host(const std::exception& error) noexcept {
+        if (host_lost_.exchange(true)) {
+            return;
+        }
+
+        try {
+            generic_logger_.log("");
+            generic_logger_.log(
+                "ERROR: Lost the connection to the Wine plugin host, it has "
+                "likely crashed. Check the output above for more information.");
+            generic_logger_.log("       (" + std::string(error.what()) + ")");
+            generic_logger_.log(
+                "       The plugin will be silent and unresponsive until it "
+                "gets reloaded.");
+            generic_logger_.log("");
+
+            send_notification(
+                "The Wine plugin host has crashed",
+                "The plugin will be silent and unresponsive until it gets "
+                "reloaded. Check yabridge's output for more information.",
+                info_.native_library_path_);
+        } catch (...) {
+            // Logging should not make this throw
+        }
+    }
+
+    /**
+     * Set by `handle_lost_host()` once the connection to the Wine plugin host
+     * has been lost.
+     */
+    std::atomic_bool host_lost_ = false;
+
+    /**
      * Format and log all relevant debug information during initialization.
      */
     void log_init_message() {
