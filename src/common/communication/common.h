@@ -343,6 +343,13 @@ class Sockets {
     virtual void connect() = 0;
 
     /**
+     * Make a `connect()` call that's currently waiting for the Wine plugin
+     * host to connect to the sockets throw instead. Used on the plugin side
+     * when the Wine plugin host exits before it has connected to the sockets.
+     */
+    void abort_connect() noexcept { connect_aborted_ = true; }
+
+    /**
      * Shut down and close all sockets. Called during the destructor and also
      * explicitly called when shutting down a plugin in a group host process.
      *
@@ -369,6 +376,13 @@ class Sockets {
      * Whether the sockets use Unix domain sockets or loopback TCP sockets.
      */
     const SocketTransport transport_;
+
+   protected:
+    /**
+     * Set by `abort_connect()`. `connect()` implementations should pass this
+     * to the socket handlers' `connect()` functions.
+     */
+    std::atomic_bool connect_aborted_ = false;
 };
 
 /**
@@ -404,9 +418,9 @@ class SocketHandler {
      * constructor, either accept connections made to the sockets on the Linux
      * side or connect to the sockets on the Wine side.
      */
-    void connect() {
+    void connect(const std::atomic_bool* abort = nullptr) {
         if (acceptor_) {
-            endpoint_.accept(*acceptor_, socket_);
+            endpoint_.accept(*acceptor_, socket_, abort);
         } else {
             endpoint_.connect(socket_);
         }
@@ -607,9 +621,9 @@ class AdHocSocketHandler {
      * constructor, either accept connections made to the sockets on the Linux
      * side or connect to the sockets on the Wine side
      */
-    void connect() {
+    void connect(const std::atomic_bool* abort = nullptr) {
         if (acceptor_) {
-            endpoint_.accept(*acceptor_, socket_);
+            endpoint_.accept(*acceptor_, socket_, abort);
 
             // As mentioned in `acceptor's` docstring, this acceptor will be
             // recreated in `receive_multi()` on another context, and

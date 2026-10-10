@@ -363,11 +363,11 @@ class Vst2Sockets final : public Sockets {
     ~Vst2Sockets() noexcept override { close(); }
 
     void connect() override {
-        host_plugin_dispatch_.connect();
-        plugin_host_callback_.connect();
-        host_plugin_parameters_.connect();
-        host_plugin_process_replacing_.connect();
-        host_plugin_control_.connect();
+        host_plugin_dispatch_.connect(&connect_aborted_);
+        plugin_host_callback_.connect(&connect_aborted_);
+        host_plugin_parameters_.connect(&connect_aborted_);
+        host_plugin_process_replacing_.connect(&connect_aborted_);
+        host_plugin_control_.connect(&connect_aborted_);
     }
 
     void close() override {

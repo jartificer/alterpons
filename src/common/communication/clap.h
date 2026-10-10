@@ -155,8 +155,8 @@ class ClapSockets final : public Sockets {
     ~ClapSockets() noexcept override { close(); }
 
     void connect() override {
-        host_plugin_main_thread_control_.connect();
-        plugin_host_main_thread_callback_.connect();
+        host_plugin_main_thread_control_.connect(&connect_aborted_);
+        plugin_host_main_thread_callback_.connect(&connect_aborted_);
     }
 
     void close() override {

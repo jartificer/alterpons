@@ -79,8 +79,8 @@ class Vst3Sockets final : public Sockets {
     ~Vst3Sockets() noexcept override { close(); }
 
     void connect() override {
-        host_plugin_control_.connect();
-        plugin_host_callback_.connect();
+        host_plugin_control_.connect(&connect_aborted_);
+        plugin_host_callback_.connect(&connect_aborted_);
     }
 
     void close() override {
