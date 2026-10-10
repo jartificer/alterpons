@@ -43,10 +43,16 @@ build() {
   ninja -C build
 
   # The 32-bit plugin host is a regular 32-bit Windows executable, built using
-  # MinGW. This needs its own build directory.
-  meson setup build-32 --buildtype=release --cross-file=cross-mingw-i686.conf \
-    --unity=on --unity-size=1000 --wrap-mode=default
-  ninja -C build-32
+  # MinGW. This needs its own build directory. makepkg's compiler and linker
+  # flags are meant for Linux binaries (the MinGW linker for instance doesn't
+  # understand `-z relro`), but Meson would also apply them to this build, so
+  # they're cleared here.
+  (
+    unset CPPFLAGS CFLAGS CXXFLAGS LDFLAGS LTOFLAGS RUSTFLAGS
+    meson setup build-32 --buildtype=release --cross-file=cross-mingw-i686.conf \
+      --unity=on --unity-size=1000 --wrap-mode=default
+    ninja -C build-32
+  )
 
   cd tools/yabridgectl
   export RUSTUP_TOOLCHAIN=stable
