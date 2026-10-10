@@ -125,8 +125,19 @@ class Vst3PluginBridge : PluginBridge<Vst3Sockets<std::jthread>> {
      */
     template <typename T>
     typename T::Response send_message(const T& object) {
-        return sockets_.host_plugin_control_.send_message(
-            object, std::pair<Vst3Logger&, bool>(logger_, true));
+        // If the Wine plugin host has crashed, then we'll return default
+        // values instead of crashing the host. See `handle_lost_host()`.
+        if (host_lost_) {
+            return typename T::Response{};
+        }
+
+        try {
+            return sockets_.host_plugin_control_.send_message(
+                object, std::pair<Vst3Logger&, bool>(logger_, true));
+        } catch (const std::system_error& error) {
+            handle_lost_host(error);
+            return typename T::Response{};
+        }
     }
 
     /**
@@ -137,8 +148,17 @@ class Vst3PluginBridge : PluginBridge<Vst3Sockets<std::jthread>> {
      */
     template <typename T>
     typename T::Response send_audio_processor_message(const T& object) {
-        return sockets_.send_audio_processor_message(
-            object, std::pair<Vst3Logger&, bool>(logger_, true));
+        if (host_lost_) {
+            return typename T::Response{};
+        }
+
+        try {
+            return sockets_.send_audio_processor_message(
+                object, std::pair<Vst3Logger&, bool>(logger_, true));
+        } catch (const std::system_error& error) {
+            handle_lost_host(error);
+            return typename T::Response{};
+        }
     }
 
     /**
@@ -151,9 +171,18 @@ class Vst3PluginBridge : PluginBridge<Vst3Sockets<std::jthread>> {
     typename T::Response& receive_audio_processor_message_into(
         const T& object,
         typename T::Response& response_object) {
-        return sockets_.receive_audio_processor_message_into(
-            object, response_object,
-            std::pair<Vst3Logger&, bool>(logger_, true));
+        if (host_lost_) {
+            return response_object;
+        }
+
+        try {
+            return sockets_.receive_audio_processor_message_into(
+                object, response_object,
+                std::pair<Vst3Logger&, bool>(logger_, true));
+        } catch (const std::system_error& error) {
+            handle_lost_host(error);
+            return response_object;
+        }
     }
 
     /**
