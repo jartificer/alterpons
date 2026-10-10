@@ -47,6 +47,16 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   an exception into the DAW, which crashed the DAW. yabridge logs an error and
   shows a desktop notification when this happens.
 
+### Fixed
+
+- Fixed 64-bit plugins that truncate pointers to 32 bits, like **Synth1**
+  64-bit, crashing and then hanging the Wine plugin host with a stack overflow
+  (as soon as a second note was played in Synth1's case). Wine only allocates
+  memory above 4 GiB when the main executable opts into high-entropy ASLR,
+  just like Windows. The 64-bit plugin host no longer does this, so
+  allocations start at low addresses again like they do for most Windows
+  applications. Plugins can still use more than 4 GiB of memory.
+
 ### Removed
 
 - The 32-bit Winelib plugin host. The `bitbridge` build option no longer builds

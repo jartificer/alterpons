@@ -460,7 +460,18 @@ if is_64bit_system
     include_directories : include_dir,
     dependencies : host_64bit_deps,
     cpp_args : compiler_options + wine_64bit_compiler_options,
-    link_args : ['-m64'],
+    link_args : [
+      '-m64',
+      # Wine only uses high-entropy ASLR, which places all memory allocations
+      # above 4 GiB, when the main executable opts into it. Windows does the
+      # same. Some older 64-bit plugins truncate pointers to 32 bits and crash
+      # when memory is allocated above 4 GiB. For instance Synth1 64-bit
+      # crashes and hangs the host as soon as a second note is played.
+      # Disabling dynamic base for the host also disables high-entropy ASLR,
+      # so allocations start at low addresses like they do for most Windows
+      # applications.
+      '-Wb,--disable-dynamicbase',
+    ],
   )
 endif
 endif  # is_pe_host_build
