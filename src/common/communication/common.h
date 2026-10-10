@@ -16,8 +16,11 @@
 
 #pragma once
 
+#include <array>
+#include <chrono>
 #include <iostream>
 #include <mutex>
+#include <thread>
 #include <variant>
 
 #include <bitsery/adapter/buffer.h>
@@ -696,9 +699,10 @@ class AdHocSocketHandler {
                 return result;
             }
         } else {
+            bool connected = false;
             try {
-                Socket secondary_socket(io_context_);
-                endpoint_.connect(secondary_socket);
+                Socket secondary_socket = connect_secondary_socket();
+                connected = true;
 
                 return callback(secondary_socket);
             } catch (const std::system_error&) {
@@ -726,10 +730,25 @@ class AdHocSocketHandler {
 
                         return result;
                     }
-                } else {
+                } else if (connected) {
                     // Rethrow the exception if the sockets we're not
                     // handling the specific case described above
                     throw;
+                } else {
+                    // We could not set up a new connection even after
+                    // retrying, but that does not mean that the other side
+                    // is gone (see `connect_secondary_socket()`). We'll wait
+                    // for the primary socket to become available instead. If
+                    // this times out (for instance because this is a
+                    // reentrant call from the thread that's currently using
+                    // the primary socket), then we'll treat it as the other
+                    // side being gone after all.
+                    std::unique_lock lock(write_mutex_, std::defer_lock);
+                    if (!lock.try_lock_for(primary_socket_fallback_timeout)) {
+                        throw;
+                    }
+
+                    return callback(socket_);
                 }
             }
         }
@@ -846,6 +865,34 @@ class AdHocSocketHandler {
 
    private:
     /**
+     * Connect a new socket to `endpoint_` for an ad hoc request. Setting up a
+     * connection can fail spuriously, for instance when the calling thread
+     * gets interrupted by a signal. The host's threads may receive signals
+     * we don't know about, so we'll retry a couple of times before giving up.
+     *
+     * @throw std::system_error If we could still not connect after retrying.
+     */
+    Socket connect_secondary_socket() {
+        using namespace std::literals::chrono_literals;
+        constexpr std::array retry_delays{0ms, 1ms, 10ms};
+
+        for (size_t attempt = 0;; attempt++) {
+            try {
+                Socket secondary_socket(io_context_);
+                endpoint_.connect(secondary_socket);
+
+                return secondary_socket;
+            } catch (const std::system_error&) {
+                if (attempt + 1 >= retry_delays.size()) {
+                    throw;
+                }
+
+                std::this_thread::sleep_for(retry_delays[attempt + 1]);
+            }
+        }
+    }
+
+    /**
      * Used in `receive_multi()` to asynchronously listen for secondary socket
      * connections. After `callback()` returns this function will continue to be
      * called until the IO context gets stopped.
@@ -932,7 +979,14 @@ class AdHocSocketHandler {
      * A mutex that locks the primary `socket`. If this is locked, then any new
      * events will be sent over a new socket instead.
      */
-    std::mutex write_mutex_;
+    std::timed_mutex write_mutex_;
+
+    /**
+     * When we could not set up an ad hoc connection even after retrying, we'll
+     * wait at most this long for the primary socket to become available before
+     * considering the other side to be gone.
+     */
+    static constexpr std::chrono::seconds primary_socket_fallback_timeout{2};
 
     /**
      * Indicates whether or not the remove has processed an event we sent from
