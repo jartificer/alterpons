@@ -481,6 +481,25 @@ void Vst2Bridge::run_process_sync_loop(F&& process_request_fn) {
             break;
         }
 
+        // MIDI events are sent together with the processing request when
+        // using this channel. This is handled the same way as
+        // `effProcessEvents()` calls received through `dispatch()`, see
+        // `Vst2Bridge::run()`.
+        if (process_request.midi_events) {
+            std::lock_guard lock(next_buffer_midi_events_mutex_);
+            if (should_clear_midi_events_) {
+                next_audio_buffer_midi_events_.clear();
+                should_clear_midi_events_ = false;
+            }
+
+            next_audio_buffer_midi_events_.push_back(
+                std::move(*process_request.midi_events));
+            process_request.midi_events.reset();
+            DynamicVstEvents& events = next_audio_buffer_midi_events_.back();
+            plugin_->dispatcher(plugin_, effProcessEvents, 0, 0,
+                                &events.as_c_events(), 0.0f);
+        }
+
         process_request_fn(process_request);
 
         last_request = request;

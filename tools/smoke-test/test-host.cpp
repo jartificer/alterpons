@@ -228,6 +228,60 @@ void test_gain_reduction_queries(AEffect* effect) {
 }
 
 /**
+ * Send MIDI events before processing calls, like a host would while notes are
+ * being played, and check that all of them reach the plugin. With the 32-bit
+ * host these are sent together with the processing request.
+ */
+void test_midi_events(AEffect* effect) {
+    constexpr int eff_vendor_specific = 50;
+    constexpr int test_plugin_id = CCONST('y', 'b', 't', 's');
+    constexpr intptr_t note_on_count = CCONST('N', 'o', 't', 'e');
+    constexpr int num_blocks = 100;
+
+    const intptr_t initial_note_ons =
+        effect->dispatcher(effect, eff_vendor_specific, test_plugin_id,
+                           note_on_count, nullptr, 0.0f);
+
+    VstMidiEvent note_on{};
+    note_on.type = kVstMidiType;
+    note_on.byteSize = sizeof(VstMidiEvent);
+    note_on.midiData[0] = static_cast<char>(0x90);
+    note_on.midiData[2] = 100;
+    VstMidiEvent note_off = note_on;
+    note_off.midiData[0] = static_cast<char>(0x80);
+    note_off.midiData[2] = 0;
+
+    struct {
+        int32_t num_events;
+        intptr_t reserved;
+        VstEvent* events[2];
+    } events{};
+    events.num_events = 2;
+    events.events[0] = reinterpret_cast<VstEvent*>(&note_on);
+    events.events[1] = reinterpret_cast<VstEvent*>(&note_off);
+
+    bool all_correct = true;
+    for (int i = 0; i < num_blocks; i++) {
+        note_on.midiData[1] = note_off.midiData[1] =
+            static_cast<char>(48 + (i % 24));
+        effect->dispatcher(effect, effProcessEvents, 0, 0, &events, 0.0f);
+
+        bool correct;
+        process_block(effect, 0.25f, i, correct);
+        all_correct &= correct;
+    }
+
+    const intptr_t note_ons =
+        effect->dispatcher(effect, eff_vendor_specific, test_plugin_id,
+                           note_on_count, nullptr, 0.0f) -
+        initial_note_ons;
+    check(all_correct && note_ons == num_blocks,
+          "MIDI events sent before processing reach the plugin (" +
+              std::to_string(note_ons) + " of " + std::to_string(num_blocks) +
+              " note ons)");
+}
+
+/**
  * Open the editor in a new X11 window, and check whether a window has been
  * embedded into it.
  */
@@ -450,6 +504,7 @@ int main(int argc, char* argv[]) {
     }
     check(chunk_correct, "effGetChunk() returns a correct 1 MiB chunk");
 
+    test_midi_events(effect);
     test_concurrent_dispatch(effect);
     test_gain_reduction_queries(effect);
 

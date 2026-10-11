@@ -553,6 +553,24 @@ intptr_t Vst2PluginBridge::dispatch(AEffect* /*plugin*/,
                                     editor_rectangle_);
 
     switch (opcode) {
+        case effProcessEvents: {
+            // With the 32-bit plugin host's futex based channel, we'll send
+            // MIDI events together with the next audio processing request.
+            // Otherwise every batch of events would need a round trip
+            // through wineserver on the audio thread. See `ProcessSync`.
+            if (process_sync_ && !host_lost_ &&
+                queue_midi_events(*static_cast<const VstEvents*>(data))) {
+                return 1;
+            }
+        } break;
+        case effMainsChanged: {
+            // Don't send MIDI events from before the plugin got suspended
+            // after it gets resumed
+            if (value == 0) {
+                std::lock_guard lock(queued_midi_events_mutex_);
+                queued_midi_events_.events_.clear();
+            }
+        } break;
         case effClose: {
             // Allow the plugin to handle its own shutdown, and then terminate
             // the process. Because terminating the Wine process will also
@@ -738,6 +756,14 @@ void Vst2PluginBridge::do_process(T** inputs, T** outputs, int sample_frames) {
     // which function to call on the Wine side (since the host might mix these
     // two up even though it really shouldn't do that and some plugins won't be
     // able to handle that)
+    if (process_sync_) {
+        std::lock_guard lock(queued_midi_events_mutex_);
+        if (!queued_midi_events_.events_.empty()) {
+            request.midi_events.emplace(std::move(queued_midi_events_));
+            queued_midi_events_.events_.clear();
+        }
+    }
+
     request.sample_frames = sample_frames;
     if constexpr (std::is_same_v<T, double>) {
         request.double_precision = true;
@@ -809,6 +835,29 @@ void Vst2PluginBridge::do_process(T** inputs, T** outputs, int sample_frames) {
     }
 
     incoming_midi_events_.clear();
+}
+
+bool Vst2PluginBridge::queue_midi_events(const VstEvents& events) {
+    // SysEx events can be large, and they're rare, so these are still sent
+    // through `dispatch()`
+    for (int i = 0; i < events.numEvents; i++) {
+        if (reinterpret_cast<const VstMidiSysExEvent*>(events.events[i])
+                ->type != kVstMidiType) {
+            return false;
+        }
+    }
+
+    std::lock_guard lock(queued_midi_events_mutex_);
+    if (queued_midi_events_.events_.size() + events.numEvents >
+        max_queued_midi_events) {
+        return false;
+    }
+
+    for (int i = 0; i < events.numEvents; i++) {
+        queued_midi_events_.events_.push_back(*events.events[i]);
+    }
+
+    return true;
 }
 
 void Vst2PluginBridge::send_process_request_sync(

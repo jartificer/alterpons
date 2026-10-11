@@ -43,6 +43,9 @@ constexpr int eff_vendor_specific = 50;
 constexpr int presonus_vendor_id = CCONST('P', 'r', 'e', 'S');
 constexpr intptr_t presonus_gain_reduction = CCONST('G', 'R', 'd', 'B');
 constexpr intptr_t gain_reduction_query_count = CCONST('G', 'R', 'q', 'c');
+// The test host can ask how many MIDI note on events the plugin has received
+constexpr intptr_t note_on_count = CCONST('N', 'o', 't', 'e');
+constexpr int eff_process_events = 25;
 
 struct TestPlugin {
     AEffect effect{};
@@ -52,6 +55,7 @@ struct TestPlugin {
     VstRect editor_rect{0, 0, 120, 240};
     std::vector<unsigned char> chunk;
     int gain_reduction_queries = 0;
+    int note_ons = 0;
 };
 
 TestPlugin* get_plugin(AEffect* effect) {
@@ -157,8 +161,23 @@ intptr_t VST_CALL_CONV dispatcher(AEffect* effect,
             } else if (index == test_plugin_id &&
                        value == gain_reduction_query_count) {
                 return plugin->gain_reduction_queries;
+            } else if (index == test_plugin_id && value == note_on_count) {
+                return plugin->note_ons;
             }
             return 0;
+        case eff_process_events: {
+            const auto* events = static_cast<const VstEvents*>(data);
+            for (int i = 0; i < events->numEvents; i++) {
+                const auto* event =
+                    reinterpret_cast<const VstMidiEvent*>(events->events[i]);
+                if (event->type == kVstMidiType &&
+                    (event->midiData[0] & 0xf0) == 0x90 &&
+                    event->midiData[2] > 0) {
+                    plugin->note_ons++;
+                }
+            }
+            return 1;
+        }
         default:
             return 0;
     }

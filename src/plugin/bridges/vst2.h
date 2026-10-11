@@ -191,6 +191,26 @@ class Vst2PluginBridge : PluginBridge<Vst2Sockets<std::jthread>> {
     void send_process_request_sync(const Vst2ProcessRequest& request);
 
     /**
+     * Queue MIDI events sent by the host using `effProcessEvents()` so they
+     * can be sent together with the next audio processing request. Only used
+     * with `process_sync_`. Returns `false` if the events should be sent using
+     * `dispatch()` instead, for instance because they contain SysEx data.
+     */
+    bool queue_midi_events(const VstEvents& events);
+
+    /**
+     * MIDI events queued by `queue_midi_events()`.
+     */
+    DynamicVstEvents queued_midi_events_;
+    std::mutex queued_midi_events_mutex_;
+    /**
+     * The maximum number of events we'll queue. This keeps the request well
+     * within `ProcessSync`'s payload size. Any additional events are sent using
+     * `dispatch()`.
+     */
+    static constexpr size_t max_queued_midi_events = 1024;
+
+    /**
      * The futex based channel used for audio processing requests instead of
      * the socket when hosting a plugin using the 32-bit Wine plugin host. See
      * `ProcessSync`.
