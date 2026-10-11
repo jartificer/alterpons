@@ -35,6 +35,15 @@ constexpr size_t chunk_size = 1 << 20;
 
 constexpr wchar_t editor_class_name[] = L"yabridge smoke test editor";
 
+// REAPER asks for a plugin's gain reduction using these vendor specific
+// opcodes. The plugin claims to support this only while the gain parameter is
+// set to 1.0. The test host can ask how many of these queries reached the
+// plugin using the second set of codes.
+constexpr int eff_vendor_specific = 50;
+constexpr int presonus_vendor_id = CCONST('P', 'r', 'e', 'S');
+constexpr intptr_t presonus_gain_reduction = CCONST('G', 'R', 'd', 'B');
+constexpr intptr_t gain_reduction_query_count = CCONST('G', 'R', 'q', 'c');
+
 struct TestPlugin {
     AEffect effect{};
     audioMasterCallback master = nullptr;
@@ -42,6 +51,7 @@ struct TestPlugin {
     HWND editor = nullptr;
     VstRect editor_rect{0, 0, 120, 240};
     std::vector<unsigned char> chunk;
+    int gain_reduction_queries = 0;
 };
 
 TestPlugin* get_plugin(AEffect* effect) {
@@ -139,6 +149,16 @@ intptr_t VST_CALL_CONV dispatcher(AEffect* effect,
                 plugin->editor = nullptr;
             }
             return 1;
+        case eff_vendor_specific:
+            if (index == presonus_vendor_id &&
+                value == presonus_gain_reduction) {
+                plugin->gain_reduction_queries++;
+                return plugin->gain >= 1.0f ? 1 : 0;
+            } else if (index == test_plugin_id &&
+                       value == gain_reduction_query_count) {
+                return plugin->gain_reduction_queries;
+            }
+            return 0;
         default:
             return 0;
     }

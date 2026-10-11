@@ -19,6 +19,7 @@
 #include <vestige/aeffectx.h>
 
 #include <asio/io_context.hpp>
+#include <atomic>
 #include <thread>
 
 #include "../../common/communication/vst2.h"
@@ -179,6 +180,22 @@ class Vst2PluginBridge : PluginBridge<Vst2Sockets<std::jthread>> {
      * only do this every once in a while.
      */
     time_t last_audio_thread_priority_synchronization_ = 0;
+
+    /**
+     * PreSonus' four character codes REAPER uses with `effVendorSpecific` to
+     * ask for the plugin's gain reduction during every processing cycle.
+     */
+    static constexpr int presonus_vendor_id = 0x50726553;            // 'PreS'
+    static constexpr intptr_t presonus_gain_reduction = 0x47526442;  // 'GRdB'
+
+    /**
+     * How many times in a row the plugin has answered REAPER's gain reduction
+     * query with 0, meaning that it doesn't support it. Once this reaches
+     * `gain_reduction_unsupported_threshold`, we'll answer the query ourselves
+     * instead of asking the Wine plugin host. See `dispatch()`.
+     */
+    std::atomic_int gain_reduction_unsupported_responses_ = 0;
+    static constexpr int gain_reduction_unsupported_threshold = 64;
 
     /**
      * The VST host can query a plugin for arbitrary binary data such as

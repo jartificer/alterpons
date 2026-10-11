@@ -65,7 +65,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   `effVendorSpecific()` calls on the plugin's GUI thread because Renoise uses
   it to set the editor's content scale, so every processing cycle had to wait
   for the GUI thread. Only that content scale call is now run on the GUI
-  thread.
+  thread. And since almost no plugins support REAPER's gain reduction query,
+  yabridge now answers it by itself once a plugin has answered it with 0 64
+  times in a row, instead of asking the plugin host during every processing
+  cycle.
 - 32-bit plugins no longer stop working after a few notes in hosts that call
   into plugins from multiple threads at the same time, like **Renoise** with
   plugin sandboxing disabled. yabridge then needs to set up additional
