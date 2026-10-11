@@ -7,8 +7,10 @@
 > This is a modified version of
 > [robbert-vdh/yabridge](https://github.com/robbert-vdh/yabridge) that adds
 > support for 32-bit Windows plugins with Wine's new WoW64 mode, which is what
-> Arch Linux' `wine` and `wine-staging` packages use. See
-> [32-bit bitbridge](#32-bit-bitbridge) for build instructions and details.
+> Arch Linux' `wine` and `wine-staging` packages use, along with fixes for
+> 32-bit plugins in Renoise and REAPER and for crashes when the Wine plugin host
+> dies. See [Changes in this fork](#changes-in-this-fork) for everything it
+> adds, and [32-bit bitbridge](#32-bit-bitbridge) for build instructions.
 > Please don't report issues with this version to the upstream project.
 
 > [!CAUTION]
@@ -28,6 +30,7 @@ while also staying easy to debug and maintain.
 
 ### Table of contents
 
+- [**Changes in this fork**](#changes-in-this-fork)
 - [Tested with](#tested-with)
 - [**Usage**](#usage)
   - [Bitbridge](#bitbridge)
@@ -50,6 +53,176 @@ while also staying easy to debug and maintain.
   - [32-bit libraries](#32-bit-libraries)
 - [Debugging](#debugging)
   - [Attaching a debugger](#attaching-a-debugger)
+
+## Changes in this fork
+
+This fork is based on upstream yabridge at commit
+[`b580a9f7`](https://github.com/robbert-vdh/yabridge/commit/b580a9f7). Its main
+goal is making 32-bit Windows plugins work reliably on modern Wine builds, and
+in hosts like Renoise and REAPER that call into plugins from several threads at
+once. Everything below is in addition to what upstream yabridge does. The
+[changelog](CHANGELOG.md) lists the same changes in release note form.
+
+### 32-bit plugins with Wine's new WoW64 mode
+
+Upstream yabridge builds its 32-bit plugin host (`yabridge-host-32.exe`) as a
+32-bit Winelib application. Wine's new WoW64 mode, which Arch Linux' `wine` and
+`wine-staging` packages use, no longer has a 32-bit Linux side, so that host
+can't run there at all ([Wine
+#58377](https://bugs.winehq.org/show_bug.cgi?id=58377)). This fork builds the
+32-bit host as a plain 32-bit Windows (PE) executable with MinGW-w64 instead,
+which runs on both new and old style WoW64 Wine. The native plugin library
+starts it through `wine` (or `$WINELOADER`). A PE executable can only use the
+Windows API, so everything the host used to do through Linux APIs had to be
+replaced:
+
+- **Loopback TCP instead of Unix domain sockets.** Wine's Winsock doesn't
+  support `AF_UNIX`, so the 32-bit host talks to the native plugin over TCP
+  sockets bound to `127.0.0.1`. Endpoints are still identified by paths: the
+  listening side writes its port number to the endpoint path. Since any user on
+  the machine can connect to a loopback port, every connection starts with a
+  challenge-response handshake. The listening side sends a random nonce and the
+  connecting side answers with `SHA256("yabridge-tcp-auth" || token || nonce)`,
+  where the token is a 64 byte secret stored in
+  `$XDG_RUNTIME_DIR/yabridge-tcp-token-<uid>`, readable only by your user, and
+  passed to the Wine host through the `YABRIDGE_TCP_TOKEN` environment
+  variable.
+- **Fewer Winsock round trips.** Every Winsock call in Wine involves a round trip
+  to `wineserver`. Messages are now written with a single gather write (size and
+  payload together), and the PE host reads through a read-ahead buffer so most
+  messages arrive with one `recv()` call.
+- **Shared audio buffers through Win32 file mappings.** The `/dev/shm` audio
+  buffers are opened with `CreateFileMapping()`/`MapViewOfFile()`, which Wine
+  backs with a `MAP_SHARED` mapping of the same file the native plugin uses.
+- **An X11 relay for editor embedding.** The PE host can't open an X11
+  connection itself. It contains a minimal implementation of the parts of libxcb
+  yabridge uses (`src/wine-host/xcb-pe`), which talks to a small relay in the
+  native plugin library (`src/plugin/x11-relay.cpp`) that forwards the traffic
+  to the real X11 server. Editor embedding and drag-and-drop work as before.
+- **Realtime scheduling through raw system calls.** Wine only maps Windows
+  thread priorities to nice values, so the 32-bit host requests `SCHED_FIFO` by
+  calling `sched_setscheduler()` directly with `int 0x80`. On x86_64 Wine traps
+  system calls made from Windows code using Linux' syscall user dispatch, which
+  would crash the host, so the host briefly flips Wine's per-thread syscall
+  dispatch selector in the 64-bit TEB to let the call through. A vectored
+  exception handler catches the fault on kernels without 32-bit syscall
+  emulation, and `YABRIDGE_NO_LINUX_SYSCALLS=1` turns this off entirely.
+
+See [32-bit bitbridge](#32-bit-bitbridge) for build instructions.
+
+### Futex based audio processing for the 32-bit host
+
+Waking up a thread that's blocked on a Winsock socket in Wine goes through
+`wineserver`. For audio processing that meant extra latency on every cycle and
+spikes of tens of milliseconds, which caused xruns. For VST2 plugins in the
+32-bit host, audio processing requests now bypass the sockets entirely:
+
+- Each plugin instance gets a 64 KiB shared memory object with a small header
+  (`ProcessSyncHeader` in `src/common/process-sync.h`). The native plugin writes
+  the serialized request, increments `request_seq` and wakes a futex. The Wine
+  host's audio thread waits on that futex, processes the request, sets
+  `response_seq` to the same value and wakes the other futex. Audio samples
+  still go through the existing shared audio buffers, so only small requests
+  pass through this channel.
+- Both sides use Linux futexes directly. The 32-bit host makes the
+  `futex()` system calls through `int 0x80`, the same way as the scheduling
+  call above. Its waits always use a timeout, because an interrupted futex wait
+  with a timeout returns `-EINTR` after a signal handler ran instead of being
+  restarted by the kernel, and a restarted system call would be trapped again
+  since Wine's signal handlers re-enable syscall trapping.
+- MIDI events the DAW sends with `effProcessEvents()` are queued (up to 1024
+  events) and sent along with the next processing request instead of needing
+  their own socket round trip on the audio thread. The Wine host passes them to
+  the plugin right before processing. SysEx events and very large batches still
+  go through the regular dispatch path, and queued events are dropped when the
+  plugin gets suspended.
+- The channel is negotiated during startup: the host announces it before
+  sending the plugin's `AEffect` struct, and the native plugin accepts it before
+  sending its configuration back. Mismatched yabridge versions therefore keep
+  using the socket. `YABRIDGE_NO_FUTEX=1` on either side also disables it.
+
+VST3 and CLAP plugins in the 32-bit host still use the socket for audio
+processing.
+
+### Hosts that call plugins from multiple threads (Renoise)
+
+Hosts like Renoise (with plugin sandboxing disabled) and REAPER call a plugin's
+`dispatcher()` from several threads at the same time, for instance
+`effProcessEvents()` from the audio thread for every note while the GUI thread
+asks for program names. Yabridge handles overlapping calls by opening an extra
+ad hoc connection to the Wine host for each one. With the 32-bit host's TCP
+sockets this used to break 32-bit plugins in Renoise after a few notes:
+
+- Setting up an ad hoc connection could fail spuriously, for instance with
+  `connect()` returning `ECONNABORTED`, or because a signal interrupted the
+  handshake's `poll()`, which was never restarted. Yabridge then concluded the
+  Wine host had crashed and the plugin went silent for good. Connection setup
+  is now retried (after 0, 1 and 10 ms), interrupted waits in the handshake and
+  in `accept()` are retried, and if a connection still can't be made the request
+  waits up to two seconds for the primary socket instead.
+- Ad hoc connections are now pooled. After a request has been handled, its
+  connection goes back into a pool of up to 8 idle connections and gets reused
+  for the next overlapping request, and the receiving side keeps serving
+  requests on it until it's closed. This avoids a TCP handshake, an
+  authentication handshake and a new thread on the Wine side for every
+  overlapping call.
+
+### REAPER audio thread fixes
+
+- REAPER calls `effVendorSpecific('PreS', 'GRdB')` from its audio thread on
+  every processing cycle to ask for the plugin's gain reduction. Upstream runs
+  all `effVendorSpecific()` calls on the Wine host's GUI thread, because Renoise
+  uses PreSonus' `'PreS'`/`'AeCs'` extension through that opcode to set the
+  editor's content scale. Every processing cycle then had to wait for the GUI
+  thread, causing xruns whenever the plugin's editor kept that thread busy. Now
+  only the content scale call runs on the GUI thread.
+- Almost no plugins support the gain reduction query. Once a plugin has answered
+  it with 0 64 times in a row, the native plugin library answers it by itself
+  without a round trip to the Wine host. Any other answer resets the count, so
+  plugins that do support it keep getting the query.
+
+### Crash and hang resilience
+
+Upstream yabridge takes the DAW down with it in several situations where the
+Wine plugin host fails. This fork handles those situations gracefully:
+
+- **The host dies before connecting.** If the Wine host exits before it has
+  connected its sockets (for instance because Wine can't start in the plugin's
+  prefix), waiting for the connection is aborted and the plugin fails to load.
+  Upstream calls `std::terminate()` here, which crashes the DAW.
+- **The host dies while the plugin is in use.** The next call from the DAW used
+  to throw an uncaught `std::system_error` (`read: End of file`) into the DAW's
+  thread. The VST2, VST3 and CLAP bridges now catch lost connections in their
+  send paths. The first time this happens yabridge logs an error and shows a
+  desktop notification, and from then on the plugin outputs silence and returns
+  default values without contacting the host again.
+- **The host hangs.** With the futex channel there's no socket that gets closed
+  when the host crashes, and Wine may attach a debugger that keeps a crashed
+  process alive. The native plugin checks once per second whether the host is
+  still running, and gives up on a host that takes longer than 10 seconds for
+  a single processing cycle. The plugin then goes silent as above.
+- **The DAW closes a plugin mid-call.** `effClose()` now waits up to two
+  seconds for other calls into the plugin that are still in progress (as
+  REAPER's audio thread can be) before freeing what those calls use, and it
+  no longer talks to a host that has already been lost.
+- **Removing a plugin with a hung host.** The Wine host now gets `SIGKILL` if
+  it hasn't exited two seconds after `SIGINT`, so removing the plugin doesn't
+  hang the DAW.
+
+### Packaging and testing
+
+- [`tools/arch/PKGBUILD`](tools/arch/PKGBUILD) builds and installs the native
+  libraries, both plugin hosts and `yabridgectl` from the local checkout on
+  Arch Linux. Makepkg's Linux `CFLAGS`/`LDFLAGS` are kept away from the MinGW
+  build, where options like `-z relro` would break the linker.
+- `yabridgectl status` and its post-sync checks understand that the 32-bit host
+  is a plain Windows executable without an accompanying `.exe.so` file.
+- [`tools/smoke-test`](tools/smoke-test/run-smoke-test.sh) contains an
+  end-to-end test with a minimal 32-bit and 64-bit Windows VST2 plugin and a
+  minimal native VST2 host. It covers both plugin hosts, 32-bit and 64-bit
+  plugins in the same process, concurrent `dispatcher()` calls interrupted by
+  signals, the gain reduction query, and MIDI delivery through the futex
+  channel.
 
 ## Tested with
 
