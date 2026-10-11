@@ -21,9 +21,12 @@
 #include <vestige/aeffectx.h>
 #include <windows.h>
 
+#include <atomic>
+
 #include "../../common/communication/vst2.h"
 #include "../../common/configuration.h"
 #include "../../common/mutual-recursion.h"
+#include "../../common/process-sync.h"
 #include "../editor.h"
 #include "common.h"
 
@@ -96,6 +99,16 @@ class Vst2Bridge : public HostBridge {
      */
     AudioShmBuffer::Config setup_shared_audio_buffers();
 
+#ifdef YABRIDGE_PE_HOST
+    /**
+     * Handle audio processing requests sent through `process_sync_` until the
+     * native plugin shuts down. Used by the audio thread instead of the socket
+     * when the native plugin supports this.
+     */
+    template <typename F>
+    void run_process_sync_loop(F&& process_request_fn);
+#endif
+
     /**
      * A logger instance we'll use log cached `audioMasterGetTime()` calls, so
      * they can be hidden on verbosity levels below 2.
@@ -124,6 +137,21 @@ class Vst2Bridge : public HostBridge {
      * large this buffer needs to be in advance.
      */
     std::optional<AudioShmBuffer> process_buffers_;
+
+#ifdef YABRIDGE_PE_HOST
+    /**
+     * The futex based channel used for audio processing requests instead of
+     * the socket, if the native plugin supports it. See `ProcessSync`. This is
+     * only used by the 32-bit host. This has to outlive
+     * `process_replacing_handler_`.
+     */
+    std::optional<ProcessSync> process_sync_;
+    /**
+     * Set in `close_sockets()` to make the audio thread stop waiting for new
+     * requests on `process_sync_`.
+     */
+    std::atomic_bool process_sync_stop_ = false;
+#endif
 
     /**
      * Pointers to the input channels in process_buffers so we can pass them to

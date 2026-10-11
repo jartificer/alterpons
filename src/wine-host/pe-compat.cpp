@@ -34,6 +34,12 @@ constexpr long sys_getpid = 20;
 constexpr long sys_sched_getparam = 155;
 constexpr long sys_sched_setscheduler = 156;
 constexpr long sys_sched_getscheduler = 157;
+constexpr long sys_futex = 240;
+
+// These are not `FUTEX_PRIVATE_FLAG` operations since the futex is shared
+// with the native plugin
+constexpr long futex_op_wait = 0;
+constexpr long futex_op_wake = 1;
 
 constexpr long linux_sched_other = 0;
 constexpr long linux_sched_fifo = 1;
@@ -45,6 +51,8 @@ constexpr long linux_enosys = 38;
  */
 extern "C" const unsigned char yabridge_int80_instruction[];
 extern "C" const unsigned char yabridge_int80_dispatch_instruction[];
+extern "C" const unsigned char yabridge_int80_4_instruction[];
+extern "C" const unsigned char yabridge_int80_dispatch_4_instruction[];
 
 /**
  * Perform the actual system call. These are defined in assembly below so we
@@ -68,8 +76,26 @@ extern "C" long __attribute__((cdecl)) yabridge_raw_int80_dispatch(
     long arg3,
     volatile unsigned char* selector);
 
-// cdecl: the arguments are on the stack, and `%ebx` and `%esi` must be
-// preserved
+/**
+ * The same as `yabridge_raw_int80()` and `yabridge_raw_int80_dispatch()`, but
+ * for system calls that take four arguments. The fourth argument is passed in
+ * `%esi`, so the selector is passed in `%edi` instead.
+ */
+extern "C" long __attribute__((cdecl)) yabridge_raw_int80_4(long number,
+                                                            long arg1,
+                                                            long arg2,
+                                                            long arg3,
+                                                            long arg4);
+extern "C" long __attribute__((cdecl)) yabridge_raw_int80_dispatch_4(
+    long number,
+    long arg1,
+    long arg2,
+    long arg3,
+    long arg4,
+    volatile unsigned char* selector);
+
+// cdecl: the arguments are on the stack, and `%ebx`, `%esi`, and `%edi` must
+// be preserved
 asm(R"(
     .text
     .globl _yabridge_raw_int80
@@ -99,6 +125,43 @@ _yabridge_raw_int80_dispatch:
 _yabridge_int80_dispatch_instruction:
     int $0x80
     movb $1, (%esi)
+    popl %esi
+    popl %ebx
+    ret
+
+    .globl _yabridge_raw_int80_4
+    .globl _yabridge_int80_4_instruction
+_yabridge_raw_int80_4:
+    pushl %ebx
+    pushl %esi
+    movl 12(%esp), %eax
+    movl 16(%esp), %ebx
+    movl 20(%esp), %ecx
+    movl 24(%esp), %edx
+    movl 28(%esp), %esi
+_yabridge_int80_4_instruction:
+    int $0x80
+    popl %esi
+    popl %ebx
+    ret
+
+    .globl _yabridge_raw_int80_dispatch_4
+    .globl _yabridge_int80_dispatch_4_instruction
+_yabridge_raw_int80_dispatch_4:
+    pushl %ebx
+    pushl %esi
+    pushl %edi
+    movl 16(%esp), %eax
+    movl 20(%esp), %ebx
+    movl 24(%esp), %ecx
+    movl 28(%esp), %edx
+    movl 32(%esp), %esi
+    movl 36(%esp), %edi
+    movb $0, (%edi)
+_yabridge_int80_dispatch_4_instruction:
+    int $0x80
+    movb $1, (%edi)
+    popl %edi
     popl %esi
     popl %ebx
     ret
@@ -171,15 +234,37 @@ std::optional<long> do_syscall(long number,
 }
 
 /**
+ * The same as `do_syscall()`, but for system calls with four arguments.
+ */
+std::optional<long> do_syscall4(long number,
+                                long arg1,
+                                long arg2,
+                                long arg3,
+                                long arg4) noexcept {
+    const std::optional<volatile unsigned char*> selector =
+        get_syscall_dispatch_selector();
+    if (!selector) {
+        return std::nullopt;
+    } else if (*selector) {
+        return yabridge_raw_int80_dispatch_4(number, arg1, arg2, arg3, arg4,
+                                             *selector);
+    } else {
+        return yabridge_raw_int80_4(number, arg1, arg2, arg3, arg4);
+    }
+}
+
+/**
  * When the kernel does not support 32-bit system calls, then `int 0x80` will
  * result in a general protection fault, which Wine turns into an exception.
  * We'll skip over the instruction and return `-ENOSYS` instead.
  */
 LONG CALLBACK int80_exception_handler(EXCEPTION_POINTERS* exception_info) {
     CONTEXT* context = exception_info->ContextRecord;
-    if (context->Eip == reinterpret_cast<DWORD>(yabridge_int80_instruction) ||
-        context->Eip ==
-            reinterpret_cast<DWORD>(yabridge_int80_dispatch_instruction)) {
+    const DWORD eip = context->Eip;
+    if (eip == reinterpret_cast<DWORD>(yabridge_int80_instruction) ||
+        eip == reinterpret_cast<DWORD>(yabridge_int80_dispatch_instruction) ||
+        eip == reinterpret_cast<DWORD>(yabridge_int80_4_instruction) ||
+        eip == reinterpret_cast<DWORD>(yabridge_int80_dispatch_4_instruction)) {
         context->Eip += 2;
         context->Eax = static_cast<DWORD>(-linux_enosys);
 
@@ -187,31 +272,6 @@ LONG CALLBACK int80_exception_handler(EXCEPTION_POINTERS* exception_info) {
     }
 
     return EXCEPTION_CONTINUE_SEARCH;
-}
-
-/**
- * Whether `int 0x80` system calls work on this system. Checked once using
- * `getpid()`.
- */
-bool linux_syscalls_available() noexcept {
-    static std::once_flag once;
-    static bool available = false;
-
-    std::call_once(once, []() {
-        // This can be used to opt out of this if it ever causes problems
-        // NOLINTNEXTLINE(concurrency-mt-unsafe)
-        if (const char* disable = getenv("YABRIDGE_NO_LINUX_SYSCALLS");
-            disable && disable == std::string("1")) {
-            return;
-        }
-
-        AddVectoredExceptionHandler(1, int80_exception_handler);
-
-        const std::optional<long> pid = do_syscall(sys_getpid, 0, 0, 0);
-        available = pid && *pid > 0;
-    });
-
-    return available;
 }
 
 template <typename F>
@@ -249,6 +309,27 @@ std::string wide_to_utf8(const WCHAR* str) {
 }
 
 }  // namespace
+
+bool linux_syscalls_available() noexcept {
+    static std::once_flag once;
+    static bool available = false;
+
+    std::call_once(once, []() {
+        // This can be used to opt out of this if it ever causes problems
+        // NOLINTNEXTLINE(concurrency-mt-unsafe)
+        if (const char* disable = getenv("YABRIDGE_NO_LINUX_SYSCALLS");
+            disable && disable == std::string("1")) {
+            return;
+        }
+
+        AddVectoredExceptionHandler(1, int80_exception_handler);
+
+        const std::optional<long> pid = do_syscall(sys_getpid, 0, 0, 0);
+        available = pid && *pid > 0;
+    });
+
+    return available;
+}
 
 WCHAR* wine_get_dos_file_name(const char* unix_path) {
     using wine_get_dos_file_name_t = WCHAR*(CDECL*)(const char*);
@@ -324,6 +405,38 @@ std::optional<long> linux_syscall(long number,
     }
 
     return do_syscall(number, arg1, arg2, arg3);
+}
+
+std::optional<long> linux_futex_wait_timeout(volatile uint32_t* address,
+                                             uint32_t expected,
+                                             uint32_t timeout_ms) noexcept {
+    if (!linux_syscalls_available()) {
+        return std::nullopt;
+    }
+
+    // This matches the 32-bit `struct old_timespec32` used by the 32-bit
+    // `futex()` system call
+    struct {
+        int32_t tv_sec;
+        int32_t tv_nsec;
+    } timeout{.tv_sec = static_cast<int32_t>(timeout_ms / 1000),
+              .tv_nsec = static_cast<int32_t>((timeout_ms % 1000) * 1000000)};
+
+    return do_syscall4(sys_futex,
+                       reinterpret_cast<long>(const_cast<uint32_t*>(address)),
+                       futex_op_wait, static_cast<long>(expected),
+                       reinterpret_cast<long>(&timeout));
+}
+
+std::optional<long> linux_futex_wake(volatile uint32_t* address,
+                                     int count) noexcept {
+    if (!linux_syscalls_available()) {
+        return std::nullopt;
+    }
+
+    return do_syscall(sys_futex,
+                      reinterpret_cast<long>(const_cast<uint32_t*>(address)),
+                      futex_op_wake, count);
 }
 
 bool linux_set_thread_realtime(bool sched_fifo, int priority) noexcept {

@@ -144,6 +144,11 @@ class AudioShmBuffer {
      */
     void resize(const Config& new_config);
 
+    /**
+     * The start of the mapped shared memory object. Used by `ProcessSync`.
+     */
+    uint8_t* data() noexcept { return shm_bytes_; }
+
     inline size_t num_input_channels(const uint32_t bus) const {
         return config_.input_offsets[bus].size();
     }

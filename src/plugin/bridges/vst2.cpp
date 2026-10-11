@@ -186,6 +186,18 @@ Vst2PluginBridge::Vst2PluginBridge(const ghc::filesystem::path& plugin_path,
         std::get<std::string>(*initialization_data.value_payload);
     warn_on_version_mismatch(host_version);
 
+    // The 32-bit Wine plugin host offers a futex based channel for audio
+    // processing requests, since waiting on a socket involves wineserver
+    // there. We need to tell it whether we'll use it before we send our
+    // configuration. See `ProcessSync`.
+    process_sync_ = ProcessSync::open_if_ready(
+        ProcessSync::name_for(sockets_.base_dir_.filename().string()));
+    if (process_sync_) {
+        __atomic_store_n(&process_sync_->header().plugin_ready, 1,
+                         __ATOMIC_RELEASE);
+        logger_.log("Using futexes for audio processing requests");
+    }
+
     // After receiving the `AEffect` values we'll want to send the configuration
     // back to complete the startup process
     sockets_.host_plugin_control_.send(config_);
@@ -194,6 +206,14 @@ Vst2PluginBridge::Vst2PluginBridge(const ghc::filesystem::path& plugin_path,
 }
 
 Vst2PluginBridge::~Vst2PluginBridge() noexcept {
+    // Let the Wine plugin host's audio thread know that it can stop waiting
+    // for requests
+    if (process_sync_) {
+        ProcessSyncHeader& header = process_sync_->header();
+        __atomic_store_n(&header.shutdown, 1, __ATOMIC_RELEASE);
+        futex_wake_shared(&header.request_seq);
+    }
+
     try {
         // Drop all work make sure all sockets are closed
         plugin_host_->terminate();
@@ -737,12 +757,16 @@ void Vst2PluginBridge::do_process(T** inputs, T** outputs, int sample_frames) {
     // processing request parameters to the Wine plugin host so it can start
     // processing audio. This is why we don't need any explicit synchronisation.
     try {
-        sockets_.host_plugin_process_replacing_.send(request);
+        if (process_sync_) {
+            send_process_request_sync(request);
+        } else {
+            sockets_.host_plugin_process_replacing_.send(request);
 
-        // From the Wine side we'll send a zero byte struct back as an
-        // acknowledgement that audio processing has finished. At this point
-        // the audio will have been written to our buffers.
-        sockets_.host_plugin_process_replacing_.receive_single<Ack>();
+            // From the Wine side we'll send a zero byte struct back as an
+            // acknowledgement that audio processing has finished. At this
+            // point the audio will have been written to our buffers.
+            sockets_.host_plugin_process_replacing_.receive_single<Ack>();
+        }
     } catch (const std::system_error& error) {
         handle_lost_host(error);
         do_process<T, replacing>(inputs, outputs, sample_frames);
@@ -785,6 +809,35 @@ void Vst2PluginBridge::do_process(T** inputs, T** outputs, int sample_frames) {
     }
 
     incoming_midi_events_.clear();
+}
+
+void Vst2PluginBridge::send_process_request_sync(
+    const Vst2ProcessRequest& request) {
+    ProcessSyncHeader& header = process_sync_->header();
+
+    process_sync_->write_request(request, process_sync_buffer_);
+    const uint32_t request_id = ++process_sync_request_id_;
+    __atomic_store_n(&header.request_seq, request_id, __ATOMIC_RELEASE);
+    futex_wake_shared(&header.request_seq);
+
+    // The timeout is only used to check whether the Wine plugin host is still
+    // running, since there's no socket that would get closed when it crashes
+    constexpr uint32_t liveness_check_interval_ms = 1000;
+    while (true) {
+        const uint32_t response =
+            __atomic_load_n(&header.response_seq, __ATOMIC_ACQUIRE);
+        if (response == request_id) {
+            return;
+        }
+
+        const long result = futex_wait_shared(&header.response_seq, response,
+                                              liveness_check_interval_ms);
+        if (result == -ETIMEDOUT && !plugin_host_->running()) {
+            throw std::system_error(
+                std::make_error_code(std::errc::connection_aborted),
+                "The Wine plugin host exited while processing audio");
+        }
+    }
 }
 
 void Vst2PluginBridge::process(AEffect* /*plugin*/,

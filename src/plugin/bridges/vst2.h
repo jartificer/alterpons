@@ -24,6 +24,7 @@
 
 #include "../../common/communication/vst2.h"
 #include "../../common/logging/vst2.h"
+#include "../../common/process-sync.h"
 #include "common.h"
 
 /**
@@ -180,6 +181,31 @@ class Vst2PluginBridge : PluginBridge<Vst2Sockets<std::jthread>> {
      * only do this every once in a while.
      */
     time_t last_audio_thread_priority_synchronization_ = 0;
+
+    /**
+     * Send an audio processing request through `process_sync_` and wait for
+     * the Wine plugin host to process it.
+     *
+     * @throw std::system_error If the Wine plugin host exited.
+     */
+    void send_process_request_sync(const Vst2ProcessRequest& request);
+
+    /**
+     * The futex based channel used for audio processing requests instead of
+     * the socket when hosting a plugin using the 32-bit Wine plugin host. See
+     * `ProcessSync`.
+     */
+    std::optional<ProcessSync> process_sync_;
+    /**
+     * The ID of the last request sent through `process_sync_`. Only used on
+     * the audio thread.
+     */
+    uint32_t process_sync_request_id_ = 0;
+    /**
+     * The buffer used to serialize requests sent through `process_sync_`, so
+     * we don't need to allocate during audio processing.
+     */
+    SerializationBuffer<256> process_sync_buffer_{};
 
     /**
      * PreSonus' four character codes REAPER uses with `effVendorSpecific` to
