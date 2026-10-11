@@ -64,9 +64,11 @@ endpoint. When the host or the plugin wants to call a function over a socket
 that is currently being written to (i.e. when the mutex for that socket is
 locked), yabridge will make a new socket connection and it will send the payload
 data over that new socket. This will cause a new thread to be spawned on the
-receiving side which then handles the request. All of this behaviour is
-encapsulated and further documented in the `AdHocSocketHandler` class and all of
-the classes derived from it.
+receiving side which then handles the request. These additional connections are
+kept around and reused for later requests, so the receiving thread keeps
+handling requests on that connection until it gets closed. All of this behaviour
+is encapsulated and further documented in the `AdHocSocketHandler` class and all
+of the classes derived from it.
 
 Another important detail when it comes to communication is the handling of
 certain function calls on the Wine plugin host side. On Windows anything that

@@ -178,6 +178,56 @@ void test_concurrent_dispatch(AEffect* effect) {
 }
 
 /**
+ * REAPER asks plugins for their gain reduction during every processing cycle.
+ * yabridge should keep passing these queries to plugins that support them, and
+ * it should answer them itself for plugins that don't so it doesn't have to
+ * talk to the Wine plugin host for every processing cycle. See
+ * `test-plugin.cpp`.
+ */
+void test_gain_reduction_queries(AEffect* effect) {
+    constexpr int eff_vendor_specific = 50;
+    constexpr int presonus_vendor_id = CCONST('P', 'r', 'e', 'S');
+    constexpr intptr_t presonus_gain_reduction = CCONST('G', 'R', 'd', 'B');
+    constexpr int test_plugin_id = CCONST('y', 'b', 't', 's');
+    constexpr intptr_t gain_reduction_query_count = CCONST('G', 'R', 'q', 'c');
+    constexpr int num_queries = 200;
+
+    const auto query_gain_reduction = [&]() {
+        char data[256] = {};
+        return effect->dispatcher(effect, eff_vendor_specific,
+                                  presonus_vendor_id, presonus_gain_reduction,
+                                  data, 0.0f);
+    };
+    const auto queries_received = [&]() {
+        return effect->dispatcher(effect, eff_vendor_specific, test_plugin_id,
+                                  gain_reduction_query_count, nullptr, 0.0f);
+    };
+
+    const float original_gain = effect->getParameter(effect, 0);
+
+    // The test plugin supports this while the gain is at 1.0
+    effect->setParameter(effect, 0, 1.0f);
+    bool all_supported = true;
+    for (int i = 0; i < num_queries; i++) {
+        all_supported &= query_gain_reduction() == 1;
+    }
+    check(all_supported && queries_received() == num_queries,
+          "Gain reduction queries reach plugins that support them");
+
+    effect->setParameter(effect, 0, original_gain);
+    bool all_unsupported = true;
+    for (int i = 0; i < num_queries; i++) {
+        all_unsupported &= query_gain_reduction() == 0;
+    }
+    const intptr_t received = queries_received() - num_queries;
+    check(all_unsupported && received > 0 && received < num_queries,
+          "Gain reduction queries for plugins that don't support them are "
+          "answered by yabridge (" +
+              std::to_string(received) + " of " + std::to_string(num_queries) +
+              " reached the plugin)");
+}
+
+/**
  * Open the editor in a new X11 window, and check whether a window has been
  * embedded into it.
  */
@@ -401,6 +451,7 @@ int main(int argc, char* argv[]) {
     check(chunk_correct, "effGetChunk() returns a correct 1 MiB chunk");
 
     test_concurrent_dispatch(effect);
+    test_gain_reduction_queries(effect);
 
     if (with_editor) {
         test_editor(effect);

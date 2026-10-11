@@ -616,15 +616,39 @@ intptr_t Vst2PluginBridge::dispatch(AEffect* /*plugin*/,
         return 0;
     }
 
+    // REAPER asks for the plugin's gain reduction from its audio thread during
+    // every processing cycle. Almost no plugins support this, and we don't want
+    // to make a round trip to the Wine plugin host for every processing cycle
+    // only to get that same answer. Doing so causes xruns, especially with the
+    // 32-bit plugin host, and when REAPER removes the plugin while the audio
+    // thread is still waiting for an answer, REAPER crashes. So once the plugin
+    // has made it clear that it doesn't support this, we'll answer for it.
+    const bool is_gain_reduction_query = opcode == effVendorSpecific &&
+                                         index == presonus_vendor_id &&
+                                         value == presonus_gain_reduction;
+    if (is_gain_reduction_query && gain_reduction_unsupported_responses_ >=
+                                       gain_reduction_unsupported_threshold) {
+        return 0;
+    }
+
     // We don't reuse any buffers here like we do for audio processing. This
     // would be useful for chunk data, but since that's only needed when saving
     // and loading plugin state it's much better to have bitsery or our
     // receiving function temporarily allocate a large enough buffer rather than
     // to have a bunch of allocated memory sitting around doing nothing.
     try {
-        return sockets_.host_plugin_dispatch_.send_event(
+        const intptr_t result = sockets_.host_plugin_dispatch_.send_event(
             converter, std::pair<Vst2Logger&, bool>(logger_, true), opcode,
             index, value, data, option);
+        if (is_gain_reduction_query) {
+            if (result == 0) {
+                gain_reduction_unsupported_responses_++;
+            } else {
+                gain_reduction_unsupported_responses_ = 0;
+            }
+        }
+
+        return result;
     } catch (const std::system_error& error) {
         handle_lost_host(error);
         return 0;
