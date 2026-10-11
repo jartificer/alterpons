@@ -17,6 +17,7 @@
 #include "transport.h"
 
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <random>
@@ -361,24 +362,47 @@ constexpr int handshake_timeout_ms = 10'000;
 /**
  * Read exactly `buffer.size()` bytes from the socket, failing if the other side
  * takes longer than `handshake_timeout_ms` to send them.
+ *
+ * Signals interrupting the wait are not errors. The native plugin library runs
+ * on the host's threads, and `poll()` is never restarted after a signal handler
+ * runs, even when that handler was installed with `SA_RESTART`. Failing the
+ * handshake there would make yabridge think that the Wine plugin host died.
  */
 void read_handshake(Socket& socket,
                     std::array<uint8_t, handshake_size>& buffer) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(handshake_timeout_ms);
+
     size_t bytes_read = 0;
     while (bytes_read < buffer.size()) {
-        std::error_code err;
-        const int ready = asio::detail::socket_ops::poll_read(
-            socket.native_handle(), 0, handshake_timeout_ms, err);
-        if (err) {
-            throw std::system_error(err, "Error during socket handshake");
-        }
-        if (ready == 0) {
+        const auto time_left =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now())
+                .count();
+        if (time_left <= 0) {
             throw std::system_error(std::make_error_code(std::errc::timed_out),
                                     "Timed out during socket handshake");
         }
 
-        bytes_read += socket.read_some(asio::buffer(
-            buffer.data() + bytes_read, buffer.size() - bytes_read));
+        std::error_code err;
+        const int ready = asio::detail::socket_ops::poll_read(
+            socket.native_handle(), 0, static_cast<int>(time_left), err);
+        if (err == asio::error::interrupted) {
+            continue;
+        }
+        if (err) {
+            throw std::system_error(err, "Error during socket handshake");
+        }
+        if (ready == 0) {
+            continue;
+        }
+
+        bytes_read += socket.read_some(asio::buffer(buffer.data() + bytes_read,
+                                                    buffer.size() - bytes_read),
+                                       err);
+        if (err && err != asio::error::interrupted) {
+            throw std::system_error(err, "Error during socket handshake");
+        }
     }
 }
 
@@ -556,6 +580,9 @@ void SocketEndpoint::accept(SocketAcceptor& acceptor,
                 std::error_code err;
                 const int ready = asio::detail::socket_ops::poll_read(
                     acceptor.native_handle(), 0, 100, err);
+                if (err == asio::error::interrupted) {
+                    continue;
+                }
                 if (err) {
                     throw std::system_error(err,
                                             "Error while waiting for a "

@@ -27,6 +27,8 @@
 // running at the same time.
 
 #include <dlfcn.h>
+#include <pthread.h>
+#include <signal.h>
 #include <xcb/xcb.h>
 
 #include <algorithm>
@@ -122,6 +124,57 @@ std::chrono::duration<double> process_block(AEffect* effect,
     }
 
     return end - start;
+}
+
+/**
+ * Call `dispatcher()` from several threads at once, like Renoise does when it
+ * isn't sandboxing plugins. yabridge then has to set up additional socket
+ * connections to the Wine plugin host. Meanwhile we'll keep interrupting those
+ * threads with a signal, since the host's threads may receive signals as well.
+ * Neither of those should cause yabridge to think the Wine plugin host died.
+ */
+void test_concurrent_dispatch(AEffect* effect) {
+    constexpr int num_threads = 4;
+    constexpr int calls_per_thread = 250;
+
+    struct sigaction action {};
+    action.sa_handler = [](int) {};
+    action.sa_flags = SA_RESTART;
+    sigaction(SIGUSR2, &action, nullptr);
+
+    std::atomic_int wrong_results = 0;
+    std::atomic_int threads_done = 0;
+    std::vector<std::thread> threads;
+    for (int i = 0; i < num_threads; i++) {
+        threads.emplace_back([&]() {
+            for (int j = 0; j < calls_per_thread; j++) {
+                char name[256] = {};
+                effect->dispatcher(effect, effGetEffectName, 0, 0, name, 0.0f);
+                if (!strstr(name, "yabridge smoke test")) {
+                    wrong_results++;
+                }
+            }
+            threads_done++;
+        });
+    }
+
+    while (threads_done < num_threads) {
+        for (auto& thread : threads) {
+            pthread_kill(thread.native_handle(), SIGUSR2);
+        }
+        std::this_thread::sleep_for(200us);
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    signal(SIGUSR2, SIG_DFL);
+
+    char name[256] = {};
+    effect->dispatcher(effect, effGetEffectName, 0, 0, name, 0.0f);
+    check(wrong_results == 0 && strstr(name, "yabridge smoke test"),
+          "Concurrent dispatcher() calls from " + std::to_string(num_threads) +
+              " threads while being interrupted by signals");
 }
 
 /**
@@ -346,6 +399,8 @@ int main(int argc, char* argv[]) {
                         static_cast<unsigned char>(i * 7);
     }
     check(chunk_correct, "effGetChunk() returns a correct 1 MiB chunk");
+
+    test_concurrent_dispatch(effect);
 
     if (with_editor) {
         test_editor(effect);

@@ -59,6 +59,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- 32-bit plugins no longer stop working after a few notes in hosts that call
+  into plugins from multiple threads at the same time, like **Renoise** with
+  plugin sandboxing disabled. yabridge then needs to set up additional
+  connections to the plugin host. With the 32-bit host's TCP sockets this could
+  fail spuriously, for instance with `ECONNABORTED` or because a signal
+  interrupted the connection handshake, after which yabridge considered the
+  plugin host to have crashed. yabridge now retries these connections and falls
+  back to the existing connection if needed.
 - Fixed a compatibility issue with **Wine 9.22** and above that caused mouse
   clicks in plugin GUIs to not register properly. A massive thanks to
   [@rbernon](https://github.com/rbernon),
