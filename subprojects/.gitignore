@@ -16,3 +16,6 @@
 !/packagefiles/function2
 !/packagefiles/ghc_filesystem
 !/function2-patch/*
+
+# Created by newer Meson versions while downloading subprojects
+/.wraplock
