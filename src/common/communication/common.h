@@ -19,9 +19,11 @@
 #include <array>
 #include <chrono>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <variant>
+#include <vector>
 
 #include <bitsery/adapter/buffer.h>
 #include <bitsery/bitsery.h>
@@ -584,6 +586,13 @@ class SocketHandler {
  *   socket instead. On the listening side the new connection will be accepted,
  *   and a newly spawned thread will handle incoming connection just like it
  *   would for the primary socket.
+ * - After such a request has been handled, the sending side keeps the
+ *   connection around and reuses it for the next request that can't use the
+ *   primary socket. The thread on the listening side keeps handling requests
+ *   on that connection until it gets closed. Hosts like Renoise call into
+ *   plugins from multiple threads at the same time all the time, and setting up
+ *   a new connection for every request is relatively expensive, especially
+ *   with the 32-bit plugin host's TCP sockets.
  *
  * @tparam Thread The thread implementation to use. On the Linux side this
  *   should be `std::jthread` and on the Wine side this should be `Win32Thread`.
@@ -649,6 +658,17 @@ class AdHocSocketHandler {
         socket_.shutdown(Socket::shutdown_both, err);
         socket_.close();
 
+        // This also tells the other side that it can stop handling these
+        // idle connections
+        {
+            std::lock_guard lock(idle_secondary_sockets_mutex_);
+            for (Socket& socket : idle_secondary_sockets_) {
+                socket.shutdown(Socket::shutdown_both, err);
+                socket.close(err);
+            }
+            idle_secondary_sockets_.clear();
+        }
+
         while (currently_listening_) {
             // If another thread is currently calling `receive_multi()`, we'll
             // spinlock until that function has exited. We would otherwise get a
@@ -680,10 +700,6 @@ class AdHocSocketHandler {
         constexpr bool returns_void =
             std::is_void_v<std::invoke_result_t<F, Socket&>>;
 
-        // XXX: Maybe at some point we should benchmark how often this
-        //      ad hoc socket spawning mechanism gets used. If some hosts
-        //      for instance consistently and repeatedly trigger this then
-        //      we might be able to do some optimizations there.
         std::unique_lock lock(write_mutex_, std::try_to_lock);
         if (lock.owns_lock()) {
             // This was used to always block when sending the first message,
@@ -701,10 +717,22 @@ class AdHocSocketHandler {
         } else {
             bool connected = false;
             try {
-                Socket secondary_socket = connect_secondary_socket();
+                // Connections are reused after the request has been handled.
+                // Setting up a new connection is relatively expensive,
+                // especially with the 32-bit host's TCP sockets, and it can
+                // also fail spuriously (see `connect_secondary_socket()`).
+                SecondarySocketLease secondary_socket(*this);
                 connected = true;
 
-                return callback(secondary_socket);
+                if constexpr (returns_void) {
+                    callback(secondary_socket.get());
+                    secondary_socket.release_to_pool();
+                } else {
+                    auto result = callback(secondary_socket.get());
+                    secondary_socket.release_to_pool();
+
+                    return result;
+                }
             } catch (const std::system_error&) {
                 // So, what do we do when noone is listening on the endpoint
                 // yet? This can happen with plugin groups when the Wine
@@ -764,9 +792,10 @@ class AdHocSocketHandler {
      * @param primary_callback A function that will do a single read cycle for
      *   the primary socket socket that should do a single read cycle. This is
      *   called in a loop so it shouldn't do any looping itself.
-     * @param secondary_callback A function that will be called when we receive
-     *   an incoming connection on a secondary socket. This would often do the
-     *   same thing as `primary_callback`, but secondary sockets may need some
+     * @param secondary_callback A function that will do a single read cycle
+     *   for a secondary socket. Like `primary_callback`, this is called in a
+     *   loop until the connection gets closed. This would often do the same
+     *   thing as `primary_callback`, but secondary sockets may need some
      *   different handling.
      */
     template <std::invocable<Socket&> F, std::invocable<Socket&> G>
@@ -782,9 +811,12 @@ class AdHocSocketHandler {
         // As described above we'll handle incoming requests for `socket` on
         // this thread. We'll also listen for incoming connections on `endpoint`
         // on another thread. For any incoming connection we'll spawn a new
-        // thread to handle the request. When `socket` closes and this loop
-        // breaks, the listener and any still active threads will be cleaned up
-        // before this function exits.
+        // thread to handle the requests sent over that connection. The other
+        // side reuses these connections, so these threads keep handling
+        // requests until the other side closes the connection. When `socket`
+        // closes and this loop breaks, the listener and any still active
+        // connections and threads will be cleaned up before this function
+        // exits.
         asio::io_context secondary_context{};
 
         // The previous acceptor has already been shut down by
@@ -792,32 +824,50 @@ class AdHocSocketHandler {
         acceptor_.emplace(endpoint_.listen(secondary_context));
 
         // This works the exact same was as `active_plugins` and
-        // `next_plugin_id` in `GroupBridge`
-        std::unordered_map<size_t, Thread> active_secondary_requests{};
-        std::atomic_size_t next_request_id{};
-        std::mutex active_secondary_requests_mutex{};
+        // `next_plugin_id` in `GroupBridge`. We need to hold on to the sockets
+        // so we can close them during shutdown, since the threads would
+        // otherwise keep waiting for new requests.
+        struct SecondaryConnection {
+            std::shared_ptr<Socket> socket;
+            Thread thread;
+        };
+        std::unordered_map<size_t, SecondaryConnection>
+            active_secondary_connections{};
+        std::atomic_size_t next_connection_id{};
+        std::mutex active_secondary_connections_mutex{};
+        bool shutting_down = false;
         accept_requests(*acceptor_, logger, [&](Socket secondary_socket) {
-            const size_t request_id = next_request_id.fetch_add(1);
+            std::lock_guard lock(active_secondary_connections_mutex);
+            if (shutting_down) {
+                return;
+            }
 
-            // We have to make sure to keep moving these sockets into the
-            // threads that will handle them
-            std::lock_guard lock(active_secondary_requests_mutex);
-            active_secondary_requests[request_id] = Thread(
-                [&, request_id](Socket secondary_socket) {
-                    secondary_callback(secondary_socket);
+            const size_t connection_id = next_connection_id.fetch_add(1);
+            auto socket = std::make_shared<Socket>(std::move(secondary_socket));
+            active_secondary_connections[connection_id] = SecondaryConnection{
+                .socket = socket,
+                .thread = Thread([&, connection_id, socket]() {
+                    while (true) {
+                        try {
+                            secondary_callback(*socket);
+                        } catch (const std::system_error&) {
+                            // The other side closed this connection
+                            break;
+                        }
+                    }
 
-                    // When we have processed this request, we'll join the
+                    // When the connection has been closed, we'll join the
                     // thread again with the thread that's handling
                     // `secondary_context`
-                    asio::post(secondary_context, [&, request_id]() {
-                        std::lock_guard lock(active_secondary_requests_mutex);
+                    asio::post(secondary_context, [&, connection_id]() {
+                        std::lock_guard lock(
+                            active_secondary_connections_mutex);
 
                         // The join is implicit because we're using
                         // `std::jthread`/`Win32Thread`
-                        active_secondary_requests.erase(request_id);
+                        active_secondary_connections.erase(connection_id);
                     });
-                },
-                std::move(secondary_socket));
+                })};
         });
 
         Thread secondary_requests_handler([&]() {
@@ -843,8 +893,15 @@ class AdHocSocketHandler {
 
         // After the primary socket gets terminated (during shutdown) we'll make
         // sure all outstanding jobs have been processed and then drop all work
-        // from the IO context
-        std::lock_guard lock(active_secondary_requests_mutex);
+        // from the IO context. The threads handling secondary connections are
+        // joined when `active_secondary_connections` gets dropped, so those
+        // connections need to be closed first.
+        std::lock_guard lock(active_secondary_connections_mutex);
+        shutting_down = true;
+        for (auto& [connection_id, connection] : active_secondary_connections) {
+            std::error_code err;
+            connection.socket->shutdown(Socket::shutdown_both, err);
+        }
         secondary_context.stop();
         acceptor_.reset();
 
@@ -864,6 +921,60 @@ class AdHocSocketHandler {
     }
 
    private:
+    /**
+     * A secondary socket that's exclusively used by the calling thread for a
+     * single request. This is either an idle connection from a previous ad hoc
+     * request, or a new connection when there are none. After the request has
+     * been handled the connection can be returned to the pool with
+     * `release_to_pool()`. If that doesn't happen, for instance because
+     * sending the request failed, the connection will be closed instead since
+     * we can no longer know whether the next message on the socket would be
+     * the response to our next request.
+     */
+    class SecondarySocketLease {
+       public:
+        /**
+         * @throw std::system_error If there were no idle connections and we
+         *   could not set up a new one.
+         */
+        explicit SecondarySocketLease(AdHocSocketHandler& handler)
+            : handler_(handler), socket_(handler.take_secondary_socket()) {}
+
+        Socket& get() noexcept { return socket_; }
+
+        void release_to_pool() {
+            std::lock_guard lock(handler_.idle_secondary_sockets_mutex_);
+            if (handler_.idle_secondary_sockets_.size() <
+                max_idle_secondary_sockets) {
+                handler_.idle_secondary_sockets_.push_back(std::move(socket_));
+            }
+        }
+
+       private:
+        AdHocSocketHandler& handler_;
+        Socket socket_;
+    };
+
+    /**
+     * Get an idle secondary connection from the pool, or connect a new one if
+     * the pool is empty.
+     *
+     * @throw std::system_error If we could not set up a new connection.
+     */
+    Socket take_secondary_socket() {
+        {
+            std::lock_guard lock(idle_secondary_sockets_mutex_);
+            if (!idle_secondary_sockets_.empty()) {
+                Socket socket = std::move(idle_secondary_sockets_.back());
+                idle_secondary_sockets_.pop_back();
+
+                return socket;
+            }
+        }
+
+        return connect_secondary_socket();
+    }
+
     /**
      * Connect a new socket to `endpoint_` for an ad hoc request. Setting up a
      * connection can fail spuriously, for instance when the calling thread
@@ -987,6 +1098,22 @@ class AdHocSocketHandler {
      * considering the other side to be gone.
      */
     static constexpr std::chrono::seconds primary_socket_fallback_timeout{2};
+
+    /**
+     * Secondary connections that are not currently in use. See
+     * `SecondarySocketLease`. On the receiving side every one of these
+     * connections has a thread waiting for the next request.
+     */
+    std::vector<Socket> idle_secondary_sockets_;
+    std::mutex idle_secondary_sockets_mutex_;
+
+    /**
+     * The maximum number of idle secondary connections we'll keep around. Even
+     * hosts that call into the plugin from many threads at once rarely need
+     * more than a few, and any additional connections will simply be closed
+     * after use.
+     */
+    static constexpr size_t max_idle_secondary_sockets = 8;
 
     /**
      * Indicates whether or not the remove has processed an event we sent from
