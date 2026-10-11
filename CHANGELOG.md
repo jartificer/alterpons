@@ -59,6 +59,13 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Fixed xruns, and crashes when removing a plugin, in **REAPER**. REAPER asks
+  VST2 plugins for their gain reduction using `effVendorSpecific()` from its
+  audio thread during every processing cycle. yabridge ran all
+  `effVendorSpecific()` calls on the plugin's GUI thread because Renoise uses
+  it to set the editor's content scale, so every processing cycle had to wait
+  for the GUI thread. Only that content scale call is now run on the GUI
+  thread.
 - 32-bit plugins no longer stop working after a few notes in hosts that call
   into plugins from multiple threads at the same time, like **Renoise** with
   plugin sandboxing disabled. yabridge then needs to set up additional

@@ -98,16 +98,41 @@ static const std::unordered_set<int> safe_mutually_recursive_requests{
  *       New Sonic Arts' Vice plugin spawns a new thread and calls drawing code
  *       while changing sample rate and block size. We'll need to see if doing
  *       this on the main thread introduces any regressions.
- * NOTE: `effVendorSpecific` is used by Renoise to set the content scale, so it
- *       needs to run on the main thread:
- *
- *       (<https://github.com/juce-framework/JUCE/blob/d054f0d14dcac387aebda44ce5d792b5e7a625b3/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp#L1812-L1814>)
+ * NOTE: `effVendorSpecific` is not in this list, see `is_unsafe_request()`.
  */
 static const std::unordered_set<int> unsafe_requests{
-    effOpen,          effClose,        effEditGetRect,   effEditOpen,
-    effEditClose,     effEditIdle,     effEditTop,       effMainsChanged,
-    effGetChunk,      effSetChunk,     effBeginLoadBank, effBeginLoadProgram,
-    effSetSampleRate, effSetBlockSize, effVendorSpecific};
+    effOpen,          effClose,       effEditGetRect,   effEditOpen,
+    effEditClose,     effEditIdle,    effEditTop,       effMainsChanged,
+    effGetChunk,      effSetChunk,    effBeginLoadBank, effBeginLoadProgram,
+    effSetSampleRate, effSetBlockSize};
+
+/**
+ * Whether a `dispatcher()` call should be handled on the main thread. See
+ * `unsafe_requests`.
+ *
+ * `effVendorSpecific` is used by Renoise to set the content scale, so that call
+ * needs to run on the main thread:
+ *
+ * (<https://github.com/juce-framework/JUCE/blob/d054f0d14dcac387aebda44ce5d792b5e7a625b3/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST2.cpp#L1812-L1814>)
+ *
+ * Other `effVendorSpecific` calls must not run on the main thread. REAPER for
+ * instance asks for the plugin's gain reduction this way from its audio thread
+ * during every processing cycle. That would then have to wait for the main
+ * thread every time, which causes xruns whenever the plugin's editor keeps the
+ * main thread busy. And when REAPER unloads the plugin while such a call is
+ * still waiting for the main thread, REAPER would crash.
+ */
+static bool is_unsafe_request(int opcode, int index, intptr_t value) {
+    // These are PreSonus' four character codes, as used by JUCE
+    constexpr int presonus_vendor_id = 0x50726553;           // 'PreS'
+    constexpr intptr_t presonus_content_scale = 0x41654373;  // 'AeCs'
+
+    if (opcode == effVendorSpecific) {
+        return index == presonus_vendor_id && value == presonus_content_scale;
+    }
+
+    return unsafe_requests.contains(opcode);
+}
 
 /**
  * These opcodes from `unsafe_requests` should be run under realtime scheduling
@@ -442,7 +467,7 @@ void Vst2Bridge::run() {
                     // is running the IO context, since this is also
                     // where the plugins were instantiated and where the
                     // Win32 message loop is handled.
-                    if (unsafe_requests.contains(opcode)) {
+                    if (is_unsafe_request(opcode, index, value)) {
                         // Requests that potentially spawn an audio worker
                         // thread should be run with `SCHED_FIFO` until Wine
                         // implements the corresponding Windows API
