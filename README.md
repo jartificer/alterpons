@@ -944,11 +944,14 @@ can only use the Windows API:
   32-bit host talks to the native plugin over TCP sockets on the loopback
   interface instead. Every connection is authenticated with a challenge-response
   handshake using a secret that's only readable by your user
-  (`$XDG_RUNTIME_DIR/yabridge-tcp-token-<uid>`). Every Winsock operation in Wine
-  involves a round trip to `wineserver`, so the 32-bit host adds more latency
-  per processing cycle than the 64-bit host. In testing this was around 100-150
-  microseconds extra per audio buffer, which is not noticeable at normal buffer
-  sizes but may matter at very small buffer sizes.
+  (`$XDG_RUNTIME_DIR/yabridge-tcp-token-<uid>`). Waiting on a Winsock socket in
+  Wine involves `wineserver`, which adds latency and occasional spikes of tens
+  of milliseconds. Because of that, VST2 audio processing requests (and MIDI
+  events sent along with them) don't use a socket. They're passed through a
+  small shared memory object instead, with both sides waiting on Linux futexes
+  directly, so `wineserver` isn't involved. Set `YABRIDGE_NO_FUTEX=1` to use
+  the socket instead. VST3 and CLAP plugins in the 32-bit host still use the
+  socket for audio processing.
 - The 32-bit host can't connect to the X11 server directly, so its X11
   connections for editor embedding and drag-and-drop go through a small relay
   in the native plugin library.
@@ -956,6 +959,7 @@ can only use the Windows API:
   `SCHED_FIFO` realtime scheduling for the audio threads, the 32-bit host makes
   the `sched_setscheduler()` Linux system call directly. Set
   `YABRIDGE_NO_LINUX_SYSCALLS=1` to disable this if it ever causes problems.
+  This also disables the futex based audio processing described above.
 
 [`tools/smoke-test`](tools/smoke-test/run-smoke-test.sh) contains an end-to-end
 test that builds a minimal 32-bit and 64-bit Windows VST2 plugin and a minimal

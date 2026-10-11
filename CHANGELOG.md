@@ -36,6 +36,14 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- VST2 audio processing with the 32-bit plugin host no longer goes through a
+  socket. Waiting on a Winsock socket in Wine involves `wineserver`, which made
+  every processing cycle slower and caused occasional latency spikes of tens of
+  milliseconds, and thus xruns. Processing requests are now passed through a
+  small shared memory object, with both sides waiting on Linux futexes
+  directly. MIDI events sent by the host using `effProcessEvents()` are sent
+  along with these requests instead of separately. Set `YABRIDGE_NO_FUTEX=1` to
+  use the socket instead.
 - Messages are now sent using a single gather write instead of two separate
   writes.
 - When the Wine plugin host exits before it has connected to yabridge, for
@@ -59,6 +67,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Removing a plugin no longer hangs the host when the Wine plugin host stopped
+  responding, for instance because the plugin crashed and Wine attached a
+  debugger to it. yabridge now kills the Wine plugin host if it doesn't exit on
+  its own.
+- Fixed a possible crash when a host closes a plugin while another one of its
+  threads is still in the middle of calling it, as REAPER can do.
 - Fixed xruns, and crashes when removing a plugin, in **REAPER**. REAPER asks
   VST2 plugins for their gain reduction using `effVendorSpecific()` from its
   audio thread during every processing cycle. yabridge ran all
