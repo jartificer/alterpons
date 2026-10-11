@@ -17,7 +17,9 @@
 #include "process.h"
 
 #include <cassert>
+#include <chrono>
 #include <iostream>
+#include <thread>
 
 #include <dlfcn.h>
 #include <spawn.h>
@@ -230,6 +232,26 @@ void Process::Handle::detach() noexcept {
 
 void Process::Handle::terminate() const noexcept {
     kill(pid_, SIGINT);
+
+    // A Wine process that hangs, or that crashed and got a debugger attached
+    // to it, may never exit on its own. We don't want the host to hang with
+    // it when it removes the plugin, so we'll kill it if it doesn't exit in
+    // time.
+    using namespace std::literals::chrono_literals;
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < deadline) {
+        int status = 0;
+        const pid_t result = waitpid(pid_, &status, WNOHANG);
+        // Either the process has been reaped now, or it has already been
+        // reaped before
+        if (result != 0) {
+            return;
+        }
+
+        std::this_thread::sleep_for(10ms);
+    }
+
+    kill(pid_, SIGKILL);
     wait();
 }
 

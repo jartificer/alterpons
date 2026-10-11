@@ -576,18 +576,30 @@ intptr_t Vst2PluginBridge::dispatch(AEffect* /*plugin*/,
             // the process. Because terminating the Wine process will also
             // forcefully close all open sockets this will also terminate our
             // handler thread.
+            // Some hosts, like REAPER, can still be in the middle of calling
+            // the plugin from another thread (for instance the audio thread)
+            // when they close it. We'll let those calls finish first, since
+            // we're about to free everything they're using.
+            wait_for_calls_in_flight();
+
             intptr_t return_value = 0;
             try {
+                // When we already lost the Wine plugin host, then it may also
+                // still be running but no longer respond, in which case this
+                // would hang
                 // TODO: Add some kind of timeout?
-                return_value = sockets_.host_plugin_dispatch_.send_event(
-                    converter, std::pair<Vst2Logger&, bool>(logger_, true),
-                    opcode, index, value, data, option);
+                if (!host_lost_) {
+                    return_value = sockets_.host_plugin_dispatch_.send_event(
+                        converter, std::pair<Vst2Logger&, bool>(logger_, true),
+                        opcode, index, value, data, option);
+                }
             } catch (const std::system_error&) {
                 // Thrown when the socket gets closed because the VST plugin
                 // loaded into the Wine process crashed during shutdown
                 logger_.log("The plugin crashed during shutdown, ignoring");
             }
 
+            wait_for_calls_in_flight();
             delete this;
 
             return return_value;
@@ -674,6 +686,7 @@ intptr_t Vst2PluginBridge::dispatch(AEffect* /*plugin*/,
     // and loading plugin state it's much better to have bitsery or our
     // receiving function temporarily allocate a large enough buffer rather than
     // to have a bunch of allocated memory sitting around doing nothing.
+    const CallInFlight call_in_flight(calls_in_flight_);
     try {
         const intptr_t result = sockets_.host_plugin_dispatch_.send_event(
             converter, std::pair<Vst2Logger&, bool>(logger_, true), opcode,
@@ -696,6 +709,8 @@ intptr_t Vst2PluginBridge::dispatch(AEffect* /*plugin*/,
 template <typename T, bool replacing>
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 void Vst2PluginBridge::do_process(T** inputs, T** outputs, int sample_frames) {
+    const CallInFlight call_in_flight(calls_in_flight_);
+
     // If the Wine plugin host has crashed, then we'll just output silence
     if (host_lost_ || !process_buffers_) [[unlikely]] {
         if constexpr (replacing) {
@@ -837,6 +852,18 @@ void Vst2PluginBridge::do_process(T** inputs, T** outputs, int sample_frames) {
     incoming_midi_events_.clear();
 }
 
+void Vst2PluginBridge::wait_for_calls_in_flight() noexcept {
+    using namespace std::literals::chrono_literals;
+
+    // These calls should finish almost immediately, but if the Wine plugin
+    // host hangs we shouldn't hang with it
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (calls_in_flight_ > 0 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(1ms);
+    }
+}
+
 bool Vst2PluginBridge::queue_midi_events(const VstEvents& events) {
     // SysEx events can be large, and they're rare, so these are still sent
     // through `dispatch()`
@@ -869,9 +896,14 @@ void Vst2PluginBridge::send_process_request_sync(
     __atomic_store_n(&header.request_seq, request_id, __ATOMIC_RELEASE);
     futex_wake_shared(&header.request_seq);
 
-    // The timeout is only used to check whether the Wine plugin host is still
-    // running, since there's no socket that would get closed when it crashes
+    // The timeout is used to check whether the Wine plugin host is still
+    // running, since there's no socket that would get closed when it crashes.
+    // When a Windows program crashes, Wine may attach a debugger to it which
+    // keeps the process alive, so we'll also give up when a single processing
+    // cycle takes longer than any plugin should ever need.
+    using namespace std::literals::chrono_literals;
     constexpr uint32_t liveness_check_interval_ms = 1000;
+    const auto give_up_after = std::chrono::steady_clock::now() + 10s;
     while (true) {
         const uint32_t response =
             __atomic_load_n(&header.response_seq, __ATOMIC_ACQUIRE);
@@ -881,10 +913,18 @@ void Vst2PluginBridge::send_process_request_sync(
 
         const long result = futex_wait_shared(&header.response_seq, response,
                                               liveness_check_interval_ms);
-        if (result == -ETIMEDOUT && !plugin_host_->running()) {
-            throw std::system_error(
-                std::make_error_code(std::errc::connection_aborted),
-                "The Wine plugin host exited while processing audio");
+        if (result == -ETIMEDOUT) {
+            if (!plugin_host_->running()) {
+                throw std::system_error(
+                    std::make_error_code(std::errc::connection_aborted),
+                    "The Wine plugin host exited while processing audio");
+            }
+            if (std::chrono::steady_clock::now() > give_up_after) {
+                throw std::system_error(
+                    std::make_error_code(std::errc::timed_out),
+                    "The Wine plugin host stopped responding while "
+                    "processing audio");
+            }
         }
     }
 }

@@ -187,8 +187,8 @@ class Process {
         void detach() noexcept;
 
         /**
-         * Forcefully terminate the process by sending `SIGKILL`. Will reap the
-         * process zombie after sending the signal.
+         * Terminate the process by sending `SIGINT`, and then `SIGKILL` if it
+         * has not exited after two seconds. Will reap the process zombie.
          */
         void terminate() const noexcept;
 

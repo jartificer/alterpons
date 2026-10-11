@@ -191,6 +191,36 @@ class Vst2PluginBridge : PluginBridge<Vst2Sockets<std::jthread>> {
     void send_process_request_sync(const Vst2ProcessRequest& request);
 
     /**
+     * Keeps track of the number of `dispatch()` (other than `effClose`) and
+     * audio processing calls currently being handled, so `effClose` can wait
+     * for those to finish before freeing this object. See
+     * `wait_for_calls_in_flight()`.
+     */
+    class CallInFlight {
+       public:
+        explicit CallInFlight(std::atomic_int& counter) noexcept
+            : counter_(counter) {
+            counter_++;
+        }
+        ~CallInFlight() noexcept { counter_--; }
+
+        CallInFlight(const CallInFlight&) = delete;
+        CallInFlight& operator=(const CallInFlight&) = delete;
+
+       private:
+        std::atomic_int& counter_;
+    };
+    std::atomic_int calls_in_flight_ = 0;
+
+    /**
+     * Wait for at most two seconds for calls on other threads tracked using
+     * `CallInFlight` to finish. Hosts are not supposed to call into a plugin
+     * while closing it, but REAPER for instance can still be in the middle of
+     * a call on its audio thread.
+     */
+    void wait_for_calls_in_flight() noexcept;
+
+    /**
      * Queue MIDI events sent by the host using `effProcessEvents()` so they
      * can be sent together with the next audio processing request. Only used
      * with `process_sync_`. Returns `false` if the events should be sent using
