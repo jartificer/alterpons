@@ -240,6 +240,26 @@ Vst2Bridge::Vst2Bridge(MainContext& main_context,
     plugin_->ptr1 = this;
     plugin_->ptr2 = reinterpret_cast<void*>(yabridge_ptr2_magic);
 
+#ifdef YABRIDGE_PE_HOST
+    // Offer the native plugin a futex based channel for audio processing
+    // requests, since waiting on a Winsock socket involves wineserver. See
+    // `ProcessSync`. The native plugin tells us whether it will use this
+    // before it sends its configuration below.
+    if (!ProcessSync::disabled() && linux_syscalls_available()) {
+        try {
+            process_sync_.emplace(ProcessSync::create(
+                ProcessSync::name_for(sockets_.base_dir_.filename().string())));
+            __atomic_store_n(&process_sync_->header().host_ready, 1,
+                             __ATOMIC_RELEASE);
+        } catch (const std::system_error& error) {
+            std::cerr << "Could not set up the audio processing channel, using "
+                         "the socket instead: "
+                      << error.what() << std::endl;
+            process_sync_.reset();
+        }
+    }
+#endif
+
     // Send the plugin's information to the Linux VST plugin. Any other updates
     // of this object will be sent over the `dispatcher()` socket. This would be
     // done after the host calls `effOpen()`, and when the plugin calls
@@ -253,6 +273,13 @@ Vst2Bridge::Vst2Bridge(MainContext& main_context,
     // After sending the AEffect struct we'll receive this instance's
     // configuration as a response
     config_ = sockets_.host_plugin_control_.receive_single<Configuration>();
+
+#ifdef YABRIDGE_PE_HOST
+    if (process_sync_ && __atomic_load_n(&process_sync_->header().plugin_ready,
+                                         __ATOMIC_ACQUIRE) != 1) {
+        process_sync_.reset();
+    }
+#endif
 
     // Allow this plugin to configure the main context's tick rate
     main_context.update_timer_interval(config_.event_loop_interval());
@@ -293,9 +320,10 @@ Vst2Bridge::Vst2Bridge(MainContext& main_context,
         // they start producing denormals
         ScopedFlushToZero ftz_guard;
 
-        sockets_.host_plugin_process_replacing_.receive_multi<
-            Vst2ProcessRequest>([&](Vst2ProcessRequest& process_request,
-                                    SerializationBufferBase& buffer) {
+        // This processes a single request. The request is received either
+        // through the socket or through `process_sync_`.
+        const auto process_request_fn = [&](Vst2ProcessRequest&
+                                                process_request) {
             // Since the value cannot change during this processing cycle,
             // we'll send the current transport information as part of the
             // request so we prefetch it to avoid unnecessary callbacks from
@@ -394,19 +422,96 @@ Vst2Bridge::Vst2Bridge(MainContext& main_context,
             } else {
                 do_process(float());
             }
+        };
 
-            // We modified the buffers within the `process_response` object,
-            // so we can just send that object back. Like on the plugin side
-            // we cannot reuse the request object because a plugin may have
-            // a different number of input and output channels
-            sockets_.host_plugin_process_replacing_.send(Ack{}, buffer);
+#ifdef YABRIDGE_PE_HOST
+        if (process_sync_) {
+            run_process_sync_loop(process_request_fn);
+            return;
+        }
+#endif
 
-            // See the docstrong on `should_clear_midi_events` for why we
-            // don't just clear `next_buffer_midi_events` here
-            should_clear_midi_events_ = true;
-        });
+        sockets_.host_plugin_process_replacing_
+            .receive_multi<Vst2ProcessRequest>(
+                [&](Vst2ProcessRequest& process_request,
+                    SerializationBufferBase& buffer) {
+                    process_request_fn(process_request);
+
+                    // We modified the buffers within the `process_response`
+                    // object, so we can just send that object back. Like on the
+                    // plugin side we cannot reuse the request object because a
+                    // plugin may have a different number of input and output
+                    // channels
+                    sockets_.host_plugin_process_replacing_.send(Ack{}, buffer);
+
+                    // See the docstrong on `should_clear_midi_events` for why
+                    // we don't just clear `next_buffer_midi_events` here
+                    should_clear_midi_events_ = true;
+                });
     });
 }
+
+#ifdef YABRIDGE_PE_HOST
+template <typename F>
+void Vst2Bridge::run_process_sync_loop(F&& process_request_fn) {
+    SerializationBuffer<256> buffer{};
+    Vst2ProcessRequest process_request{};
+    ProcessSyncHeader& header = process_sync_->header();
+
+    uint32_t last_request =
+        __atomic_load_n(&header.request_seq, __ATOMIC_ACQUIRE);
+    while (!process_sync_stop_ &&
+           !__atomic_load_n(&header.shutdown, __ATOMIC_ACQUIRE)) {
+        const uint32_t request =
+            __atomic_load_n(&header.request_seq, __ATOMIC_ACQUIRE);
+        if (request == last_request) {
+            // The timeout lets us check whether we should stop, and it's also
+            // what makes this safe to call, see `linux_futex_wait_timeout()`.
+            // An interrupted wait or a spurious wakeup just leads to another
+            // iteration.
+            linux_futex_wait_timeout(&header.request_seq, last_request, 100);
+            continue;
+        }
+
+        try {
+            process_sync_->read_request(process_request, buffer);
+        } catch (const std::exception& error) {
+            std::cerr << "Could not read an audio processing request: "
+                      << error.what() << std::endl;
+            break;
+        }
+
+        // MIDI events are sent together with the processing request when
+        // using this channel. This is handled the same way as
+        // `effProcessEvents()` calls received through `dispatch()`, see
+        // `Vst2Bridge::run()`.
+        if (process_request.midi_events) {
+            std::lock_guard lock(next_buffer_midi_events_mutex_);
+            if (should_clear_midi_events_) {
+                next_audio_buffer_midi_events_.clear();
+                should_clear_midi_events_ = false;
+            }
+
+            next_audio_buffer_midi_events_.push_back(
+                std::move(*process_request.midi_events));
+            process_request.midi_events.reset();
+            DynamicVstEvents& events = next_audio_buffer_midi_events_.back();
+            plugin_->dispatcher(plugin_, effProcessEvents, 0, 0,
+                                &events.as_c_events(), 0.0f);
+        }
+
+        process_request_fn(process_request);
+
+        last_request = request;
+        __atomic_store_n(&header.response_seq, request, __ATOMIC_RELEASE);
+        linux_futex_wake(&header.response_seq, 1);
+
+        // See the docstrong on `should_clear_midi_events` for why we don't
+        // just clear `next_buffer_midi_events` here
+        should_clear_midi_events_ = true;
+    }
+}
+#endif
 
 #pragma GCC diagnostic pop
 
@@ -540,6 +645,9 @@ void Vst2Bridge::run() {
 }
 
 void Vst2Bridge::close_sockets() {
+#ifdef YABRIDGE_PE_HOST
+    process_sync_stop_ = true;
+#endif
     sockets_.close();
 }
 

@@ -24,6 +24,7 @@
 
 #include "../../common/communication/vst2.h"
 #include "../../common/logging/vst2.h"
+#include "../../common/process-sync.h"
 #include "common.h"
 
 /**
@@ -180,6 +181,81 @@ class Vst2PluginBridge : PluginBridge<Vst2Sockets<std::jthread>> {
      * only do this every once in a while.
      */
     time_t last_audio_thread_priority_synchronization_ = 0;
+
+    /**
+     * Send an audio processing request through `process_sync_` and wait for
+     * the Wine plugin host to process it.
+     *
+     * @throw std::system_error If the Wine plugin host exited.
+     */
+    void send_process_request_sync(const Vst2ProcessRequest& request);
+
+    /**
+     * Keeps track of the number of `dispatch()` (other than `effClose`) and
+     * audio processing calls currently being handled, so `effClose` can wait
+     * for those to finish before freeing this object. See
+     * `wait_for_calls_in_flight()`.
+     */
+    class CallInFlight {
+       public:
+        explicit CallInFlight(std::atomic_int& counter) noexcept
+            : counter_(counter) {
+            counter_++;
+        }
+        ~CallInFlight() noexcept { counter_--; }
+
+        CallInFlight(const CallInFlight&) = delete;
+        CallInFlight& operator=(const CallInFlight&) = delete;
+
+       private:
+        std::atomic_int& counter_;
+    };
+    std::atomic_int calls_in_flight_ = 0;
+
+    /**
+     * Wait for at most two seconds for calls on other threads tracked using
+     * `CallInFlight` to finish. Hosts are not supposed to call into a plugin
+     * while closing it, but REAPER for instance can still be in the middle of
+     * a call on its audio thread.
+     */
+    void wait_for_calls_in_flight() noexcept;
+
+    /**
+     * Queue MIDI events sent by the host using `effProcessEvents()` so they
+     * can be sent together with the next audio processing request. Only used
+     * with `process_sync_`. Returns `false` if the events should be sent using
+     * `dispatch()` instead, for instance because they contain SysEx data.
+     */
+    bool queue_midi_events(const VstEvents& events);
+
+    /**
+     * MIDI events queued by `queue_midi_events()`.
+     */
+    DynamicVstEvents queued_midi_events_;
+    std::mutex queued_midi_events_mutex_;
+    /**
+     * The maximum number of events we'll queue. This keeps the request well
+     * within `ProcessSync`'s payload size. Any additional events are sent using
+     * `dispatch()`.
+     */
+    static constexpr size_t max_queued_midi_events = 1024;
+
+    /**
+     * The futex based channel used for audio processing requests instead of
+     * the socket when hosting a plugin using the 32-bit Wine plugin host. See
+     * `ProcessSync`.
+     */
+    std::optional<ProcessSync> process_sync_;
+    /**
+     * The ID of the last request sent through `process_sync_`. Only used on
+     * the audio thread.
+     */
+    uint32_t process_sync_request_id_ = 0;
+    /**
+     * The buffer used to serialize requests sent through `process_sync_`, so
+     * we don't need to allocate during audio processing.
+     */
+    SerializationBuffer<256> process_sync_buffer_{};
 
     /**
      * PreSonus' four character codes REAPER uses with `effVendorSpecific` to

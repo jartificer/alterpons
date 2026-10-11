@@ -574,6 +574,15 @@ struct Vst2ProcessRequest {
      */
     std::optional<int> new_realtime_priority;
 
+    /**
+     * MIDI events the host sent using `effProcessEvents()` since the last
+     * processing cycle. This is only used with the 32-bit plugin host's futex
+     * based channel (see `ProcessSync`), where we can avoid a round trip
+     * through wineserver for every batch of MIDI events this way. Otherwise
+     * these events are sent using `dispatch()` like any other event.
+     */
+    std::optional<DynamicVstEvents> midi_events;
+
     template <typename S>
     void serialize(S& s) {
         s.value4b(sample_frames);
@@ -584,6 +593,8 @@ struct Vst2ProcessRequest {
 
         s.ext(new_realtime_priority, bitsery::ext::InPlaceOptional{},
               [](S& s, int& priority) { s.value4b(priority); });
+
+        s.ext(midi_events, bitsery::ext::InPlaceOptional{});
     }
 };
 
