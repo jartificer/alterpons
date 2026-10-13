@@ -240,12 +240,11 @@ authentication token to the 32-bit host. Don't set it yourself.
 ### Tested with
 
 This version has been developed and tested on Arch Linux with `wine-staging`
-11.19 in Wine's new WoW64 mode, with **REAPER 7.82**, and with the 32-bit and
-64-bit plugins from the [smoke test](tools/smoke-test/run-smoke-test.sh). The
-Renoise specific fixes (calls into a plugin from several threads at once) are
-covered by the smoke test. Other hosts that work with upstream yabridge, like
-Bitwig Studio, Carla, Ardour, and Renoise, should work the same way, since the
-64-bit plugin path is unchanged apart from the crash fixes above.
+11.19 in Wine's new WoW64 mode, with **Renoise** and **REAPER 7.82**, and with
+the 32-bit and 64-bit plugins from the [smoke
+test](tools/smoke-test/run-smoke-test.sh). Other hosts that work with upstream
+yabridge, like Bitwig Studio, Carla, and Ardour, should work the same way, since
+the 64-bit plugin path is unchanged apart from the crash fixes above.
 
 > [!IMPORTANT]
 > Like upstream yabridge, this doesn't work with DAWs installed as `flatpak`
