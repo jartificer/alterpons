@@ -222,79 +222,11 @@ Wine plugin host fails. This fork handles those situations gracefully:
   signals, the gain reduction query, and MIDI delivery through the futex
   channel.
 
-## Tested with
-
-Yabridge has been tested under the following hosts using Wine Staging 9.21. See
-the [common issues](#troubleshooting-common-issues) section for instructions on
-how to use yabridge with later versions of Wine.
-
-> [!IMPORTANT]
-> yabridge doesn't work with `flatpak` packages. Please use native packages (.deb, .rpm, AUR etc) of the DAWs listed below.
-
-| Host              | VST2               | VST3                                                        | CLAP                                                 |
-| ----------------- | ------------------ | ----------------------------------------------------------- | ---------------------------------------------------- |
-| Bitwig Studio 6.0 | :heavy_check_mark: | :heavy_check_mark:                                          | :heavy_check_mark:                                   |
-| REAPER 7.12       | :heavy_check_mark: | :heavy_check_mark:                                          | :heavy_check_mark:                                   |
-| Carla 2.5.5       | :heavy_check_mark: | :heavy_check_mark:                                          | Does not support CLAP                                |
-| Qtractor 0.9.29   | :heavy_check_mark: | :warning: VST3 editor windows may not have the correct size | :warning: Qtractor may not support every CLAP plugin |
-| Renoise 3.4.3     | :heavy_check_mark: | :heavy_check_mark:                                          | Does not support CLAP                                |
-| Waveform 12.1.3   | :heavy_check_mark: | :heavy_check_mark:                                          | Does not support CLAP                                |
-| Ardour 8.1        | :heavy_check_mark: | :warning: Some plugins may cause Ardour 7.3-8.1 to freeze   | Does not support CLAP                                |
-| Mixbus 7.0.140    | :heavy_check_mark: | :heavy_check_mark:                                          | Does not support CLAP                                |
-
-Please let me know if there are any issues with other hosts.
 
 ## Usage
 
-0. First of all, yabridge requires a recent-ish version of Wine (Staging). Users
-   of Debian, Ubuntu, Linux Mint and Pop!\_OS should install Wine Staging from
-   the [WineHQ repositories](https://wiki.winehq.org/Download) as the Wine
-   versions provided by those distro's repositories may be too old to be used
-   with yabridge. On other distros you should be able to just install
-   `wine-staging` using your distro's package manager.
 
-   For a general overview on how to use Wine to install Windows applications,
-   check out Wine's [user
-   guide](https://wiki.winehq.org/Wine_User%27s_Guide#Using_Wine).
-
-1. Depending on your distro you can install yabridge and its yabridgectl
-   companion utility through your distro's package manager or by using
-   a binary archive from the GitHub releases page. Keep in mind that the distro
-   packages mentioned below may not always be up to date, and some may also not
-   be compiled with support for 32-bit plugins.
-
-   <a href="https://repology.org/project/yabridge/versions" target="_blank" rel="noopener" title="Packaging status"><img align="right" src="https://repology.org/badge/vertical-allrepos/yabridge.svg"></a>
-
-   - On **Arch** and **Manjaro**, yabridge and yabridgectl can be installed from
-     the official repositories using the
-     [`yabridge`](https://archlinux.org/packages/multilib/x86_64/yabridge/) and
-     [`yabridgectl`](https://archlinux.org/packages/multilib/x86_64/yabridgectl/)
-     packages.
-   - On **Fedora**, you can install yabridge and yabridgectl from a
-     [COPR](https://copr.fedorainfracloud.org/coprs/patrickl/wine-tkg/).
-   - On the **OpenSUSE** distros, yabridge and yabridgectl are packaged by
-     [GeekosDAW](https://geekosdaw.tuxfamily.org/en/).
-   - On **NixOS**, yabridge and yabridgectl are in the repositories.
-
-   - On **Ubuntu**, **Debian**, **Linux Mint**, **Pop!\_OS**, and any other
-     distro, you can simply download and install a prebuilt version of yabridge:
-
-     1. First download the latest version of yabridge from the [releases
-        page](https://github.com/robbert-vdh/yabridge/releases). These binaries
-        currently target Ubuntu 20.04, and should work on any other distro
-        that's newer than that.
-     2. Extract the contents of the downloaded archive to `~/.local/share`, such
-        that the file `~/.local/share/yabridge/yabridgectl` exists after
-        extracting. You can extract an archive here from the command line with
-        `tar -C ~/.local/share -xavf yabridge-x.y.z.tar.gz`. If you're
-        extracting the archive using a GUI file manager or archive tool, then
-        make sure that hidden files and directories are visible by pressing
-        <kbd>Ctrl+H</kbd>. You should also double check that your archive
-        extraction tool didn't create an additional subdirectory in
-        `~/.local/share`. Dragging and dropping the `yabridge` directory from
-        the archive directly to `~/.local/share` is the best way to make sure
-        this doesn't happen.
-     3. **Whenever any step after this mentions running `yabridgectl <something>`,
+1. **Whenever any step after this mentions running `yabridgectl <something>`,
         then you should run `~/.local/share/yabridge/yabridgectl <something>`
         instead.**
 
@@ -405,79 +337,6 @@ let you type spaces in text fields in **Bitwig Studio**, type text into the
 settings and license dialogs in **Voxengo** plugins, and it will also allow you
 to navigate dropdowns with the keyboard.
 
-### Downgrading Wine
-
-If you run into software or a plugin that does not work correctly with the
-current version of Wine Staging, then you may want to try downgrading to an
-earlier version of Wine. This can be done as follows:
-
-- On Debian, Ubuntu, Linux Mint and other apt-based distros, you can use the
-  command below to install Wine Staging 9.21 after you add the WineHQ
-  repositories linked above. This command is a bit cryptic because on these
-  distros the Wine package is split up into multiple smaller packages, and the
-  package versions include the distros codename (e.g. `focal`, or `buster`) as
-  well as some numeric suffix. Change the version to whatever version of Wine
-  you want to install, and then run these commands under Bash:
-
-  ```shell
-  version=9.21
-  variant=staging
-  codename=$(shopt -s nullglob; awk '/^deb https:\/\/dl\.winehq\.org/ { print $3; exit 0 } END { exit 1 }' /etc/apt/sources.list /etc/apt/sources.list.d/*.list || awk '/^Suites:/ { print $2; exit }' /etc/apt/sources.list /etc/apt/sources.list.d/wine*.sources)
-  suffix=$(dpkg --compare-versions "$version" ge 6.1 && ((dpkg --compare-versions "$version" eq 6.17 && echo "-2") || echo "-1"))
-  sudo apt install --install-recommends {"winehq-$variant","wine-$variant","wine-$variant-amd64","wine-$variant-i386"}="$version~$codename$suffix"
-  ```
-
-  If you want to prevent these packages from being updated automatically, then
-  you can do so with:
-
-  ```shell
-  sudo apt-mark hold winehq-staging
-  ```
-
-  Running the same command with `unhold` instead of `hold` will enable updates
-  again.
-
-- On Arch and Manjaro, you can install the
-  [downgrade](https://aur.archlinux.org/packages/downgrade/) tool from the repos
-  or the AUR, then run:
-
-  ```shell
-  sudo env DOWNGRADE_FROM_ALA=1 downgrade wine-staging
-  ```
-
-  Then select the package for the wine-staging version you want to isntall from
-  the list. After installing downgrade will ask if you want to add the package
-  to `IgnorePkg`. If you select `yes`, the package will be added to the
-  `IgnorePkg` field in `/etc/pacman.conf` and it won't be updated again
-  automatically.
-
-### Installing a development build
-
-If you want to try to a development version of yabridge, then you can do so as
-follows:
-
-- On Arch and Manjaro, you can install the latest master branch version of
-  yabridge by installing the
-  [yabridge-git](https://aur.archlinux.org/packages/yabridge-git/) and
-  [yabridgectl-git](https://aur.archlinux.org/packages/yabridgectl-git/) AUR
-  packages.
-- Otherwise, you can find development builds on the [automated build
-  page](https://github.com/robbert-vdh/yabridge/actions?query=workflow%3A%22Automated+builds%22+branch%3Amaster).
-  Before you can download these files, you need log in to GitHub. Then simply
-  select the latest commit with a green checkmark next to it, scroll down the
-  build page, and download the latest yabridge and yabridgectl binaries that
-  match your system. You can also access the very latest build from [this
-  page](https://nightly.link/robbert-vdh/yabridge/workflows/build/master)
-  without logging in to GitHub. You'll need to extract these files twice, since
-  GitHub automatically puts the tarball inside of a .zip archive. Then simply
-  overwrite the existing files in `~/.local/share/yabridge` with the ones from
-  the `yabridge` directory, and replace `~/.local/share/yabridge/yabridgectl`
-  with the new `yabridgectl/yabridgectl` binary. It's also possible to use these
-  builds if you're using a distro package, but then you should remove the
-  package first in order to avoid conflicts.
-
-After updating yabridge's files, you will need to rerun `yabridgectl sync` to
-finish the upgrade.
 
 ## Configuration
 
