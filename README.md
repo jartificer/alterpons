@@ -1,6 +1,5 @@
 # yabridge
 
-
 > [!NOTE]
 > This is a modified version of
 > [robbert-vdh/yabridge](https://github.com/robbert-vdh/yabridge) that adds
@@ -9,7 +8,9 @@
 > 32-bit plugins in Renoise and REAPER and for crashes when the Wine plugin host
 > dies. See [Changes in this fork](#changes-in-this-fork) for everything it
 > adds, and [32-bit bitbridge](#32-bit-bitbridge) for build instructions.
-> Please don't report issues with this version to the upstream project.
+> Please don't report issues with this version to the upstream project. Use
+> this repository's [issue
+> tracker](https://github.com/jartificer/yabridge-custom/issues) instead.
 
 > [!CAUTION]
 > The upstream yabridge project's GitHub page is its only official page. If you
@@ -29,15 +30,14 @@ while also staying easy to debug and maintain.
 ### Table of contents
 
 - [**Changes in this fork**](#changes-in-this-fork)
-- [Tested with](#tested-with)
+  - [Environment variables](#environment-variables)
+  - [Tested with](#tested-with)
 - [**Usage**](#usage)
   - [Bitbridge](#bitbridge)
   - [Wine prefixes](#wine-prefixes)
   - [Using different Wine versions](#using-different-wine-versions)
   - [Drag-and-drop](#drag-and-drop)
   - [Input focus grabbing](#input-focus-grabbing)
-  - [Downgrading Wine](#downgrading-wine)
-  - [Installing a development build](#installing-a-development-build)
 - [Configuration](#configuration)
   - [Plugin groups](#plugin-groups)
   - [Compatibility options](#compatibility-options)
@@ -48,7 +48,6 @@ while also staying easy to debug and maintain.
   - [Environment configuration](#environment-configuration)
 - [Building](#building)
   - [32-bit bitbridge](#32-bit-bitbridge)
-  - [32-bit libraries](#32-bit-libraries)
 - [Debugging](#debugging)
   - [Attaching a debugger](#attaching-a-debugger)
 
@@ -222,18 +221,86 @@ Wine plugin host fails. This fork handles those situations gracefully:
   signals, the gain reduction query, and MIDI delivery through the futex
   channel.
 
+### Environment variables
+
+Besides the variables upstream yabridge supports (see
+[Debugging](#debugging) and [Troubleshooting](#troubleshooting-common-issues)),
+this version reads the following ones. They're only meant for working around
+problems, and you normally don't need to set any of them.
+
+| Variable                       | Effect                                                                                                                                                                                                    |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `YABRIDGE_NO_FUTEX=1`          | Send VST2 audio processing requests for the 32-bit host through the socket instead of the futex based shared memory channel.                                                                             |
+| `YABRIDGE_NO_LINUX_SYSCALLS=1` | Stop the 32-bit host from making Linux system calls directly. This disables `SCHED_FIFO` realtime scheduling for its audio threads, and with it the futex channel, since that also needs those calls. |
+| `WINELOADER`                   | As with upstream, the Wine binary to use. In this version it's also used to start the 32-bit host, which is a regular Windows executable that has to be run through Wine.                               |
+
+`YABRIDGE_TCP_TOKEN` is also set by yabridge itself to pass the TCP
+authentication token to the 32-bit host. Don't set it yourself.
+
+### Tested with
+
+This version has been developed and tested on Arch Linux with `wine-staging`
+11.19 in Wine's new WoW64 mode, with **Renoise** and **REAPER 7.82**, and with
+the 32-bit and 64-bit plugins from the [smoke
+test](tools/smoke-test/run-smoke-test.sh). Other hosts that work with upstream
+yabridge, like Bitwig Studio, Carla, and Ardour, should work the same way, since
+the 64-bit plugin path is unchanged apart from the crash fixes above.
+
+> [!IMPORTANT]
+> Like upstream yabridge, this doesn't work with DAWs installed as `flatpak`
+> packages. Use native packages of your DAW instead.
 
 ## Usage
 
+0. You'll need a recent version of Wine (Staging). Unlike upstream yabridge,
+   this version also supports 32-bit plugins with Wine builds that use the new
+   WoW64 mode, like Arch Linux' `wine` and `wine-staging` packages, so any
+   current Wine package from your distro or from WineHQ will do.
 
-1. **Whenever any step after this mentions running `yabridgectl <something>`,
-        then you should run `~/.local/share/yabridge/yabridgectl <something>`
-        instead.**
+   For a general overview on how to use Wine to install Windows applications,
+   check out Wine's [user
+   guide](https://wiki.winehq.org/Wine_User%27s_Guide#Using_Wine).
 
-        Alternatively, you can also add that directory to your shell's search
-        path. That way you can run `yabridgectl` directly. If you don't know
-        what that means, then add `export PATH="$PATH:$HOME/.local/share/yabridge"`
-        to the end of `~/.bashrc` and reopen your terminal.
+1. This version of yabridge isn't available as a distro package or as a
+   prebuilt download, so you'll need to build it yourself. Don't install it
+   alongside your distro's `yabridge` package, since both would try to manage
+   the same plugins.
+
+   - On **Arch Linux**, the [`PKGBUILD`](tools/arch/PKGBUILD) in `tools/arch`
+     builds and installs the native plugin libraries, both plugin hosts, and
+     `yabridgectl` from your local checkout. It replaces the `yabridge` and
+     `yabridgectl` packages if you have those installed.
+
+     ```shell
+     git clone https://github.com/jartificer/yabridge-custom.git
+     cd yabridge-custom/tools/arch
+     makepkg -si
+     ```
+
+     This installs everything under `/usr`, where yabridge and yabridgectl find
+     it automatically. Rerun `makepkg -si` after pulling new changes, and then
+     run `yabridgectl sync` to finish updating.
+
+   - On **other distros**, follow the instructions in the
+     [Building](#building) section, including the [32-bit
+     bitbridge](#32-bit-bitbridge) part if you want to use 32-bit plugins.
+     Then copy the build results to `~/.local/share/yabridge`:
+
+     ```shell
+     mkdir -p ~/.local/share/yabridge
+     cp build/libyabridge-*.so build/yabridge-host.exe build/yabridge-host.exe.so \
+       build-32/yabridge-host-32.exe tools/yabridgectl/target/release/yabridgectl \
+       ~/.local/share/yabridge/
+     ```
+
+     **Whenever any step after this mentions running `yabridgectl <something>`,
+     then you should run `~/.local/share/yabridge/yabridgectl <something>`
+     instead.**
+
+     Alternatively, you can also add that directory to your shell's search
+     path. That way you can run `yabridgectl` directly. If you don't know what
+     that means, then add `export PATH="$PATH:$HOME/.local/share/yabridge"` to
+     the end of `~/.bashrc` and reopen your terminal.
 
 2. Setting up and updating yabridge for your plugins is done though the
    `yabridgectl` command line utility. The basic idea is that you first install
@@ -255,7 +322,9 @@ Wine plugin host fails. This fork handles those situations gracefully:
       `yabridgectl add "$HOME/.wine/drive_c/Program Files/Steinberg/VstPlugins"`.
       This directory may be capitalized as `VSTPlugins` on your system, and some
       plugins may also install themselves to a similar directory directly inside
-      of Program Files.
+      of Program Files. 32-bit VST2 plugins are usually installed to the same
+      directories under `Program Files (x86)` instead, so add that one as well
+      if you use them.
    2. VST3 plugins under Windows are always installed to
       `C:\Program Files\Common Files\VST3`, and you can use
       `yabridgectl add "$HOME/.wine/drive_c/Program Files/Common Files/VST3"` to
@@ -277,9 +346,10 @@ Wine plugin host fails. This fork handles those situations gracefully:
 Yabridge can also load 32-bit Windows plugins so you can use them in your 64-bit
 Linux DAW. Yabridge will automatically detect whether a plugin is 32-bit or
 64-bit on startup and it will handle it accordingly. 32-bit and 64-bit plugins
-can be used side by side in the same DAW session. If you've installed yabridge
-through a distro package, then it may be possible that your distro has disabled
-this feature.
+can be used side by side in the same DAW session. This requires the 32-bit
+plugin host, `yabridge-host-32.exe`, which the Arch `PKGBUILD` always builds, and
+which you can build yourself as described under [32-bit
+bitbridge](#32-bit-bitbridge).
 
 In this version of yabridge the 32-bit plugin host (`yabridge-host-32.exe`) is a
 regular 32-bit Windows executable instead of a 32-bit Winelib application. This
@@ -295,6 +365,11 @@ time. Yabridge will automatically detect and use the Wine prefix the Windows
 plugin's `.dll`, `.vst3`, or `.clap` file is located in. Alternatively, you can
 set the `WINEPREFIX` environment variable to override the Wine prefix for _all
 yabridge plugins_.
+
+With Wine's new WoW64 mode, 32-bit only Wine prefixes (created with
+`WINEARCH=win32`) can't be used at all. Install your 32-bit plugins into a
+regular 64-bit prefix instead, where they'll end up under `Program Files (x86)`.
+yabridge then uses the 32-bit host for those plugins automatically.
 
 ### Using different Wine versions
 
@@ -627,21 +702,38 @@ Aside from that, these are some known caveats:
   Deactivating and reactivating the plugin will cause these labels to be updated
   again for the current patch.
 
-There are also some (third party) plugin API extensions for that have not been
-implemented yet. See the [roadmap](./ROADMAP.md) for a list of future plans.
+There are also some (third party) plugin API extensions that have not been
+implemented yet. See upstream's [roadmap](./ROADMAP.md) for a list of those.
 
 ## Troubleshooting common issues
 
-If your problem is not listed here, then feel free to post on the [issue
-tracker](https://github.com/robbert-vdh/yabridge/issues) or to ask about it in
-the yabridge [Discord](https://discord.gg/pyNeweqadf). Also check the [known
-issues and fixes](#known-issues-and-fixes) section above for help with
+If your problem is not listed here, then feel free to post on this
+repository's [issue
+tracker](https://github.com/jartificer/yabridge-custom/issues). Also check the
+[known issues and fixes](#known-issues-and-fixes) section above for help with
 plugin-specific issues.
 
-- Wine 9.22 and Wine 10.x currently don't work with yabridge 5.1.1 or belong.
-  You will either have to [downgrade to Wine 9.21](#downgrading-wine) for the
-  time being, or install a [development build](#installing-a-development-build)
-  of yabridge.
+- This version includes upstream's fix for Wine 9.22 and later, so there's no
+  need to downgrade Wine to use it.
+
+- If a plugin suddenly goes silent and yabridge shows a desktop notification
+  saying that it lost the connection to the Wine plugin host, then that host
+  crashed, exited, or stopped responding. This version keeps your DAW running
+  in that case instead of crashing it, but the plugin stays silent until you
+  remove it and load it again. The log output from before the notification
+  usually shows why the host died.
+
+- If a plugin fails to load with an error saying the Wine plugin host exited
+  before it could connect to yabridge, then Wine could not start the host at
+  all. A common cause is a 32-bit only Wine prefix, see [Wine
+  prefixes](#wine-prefixes). Running the host directly, as described below,
+  usually shows the reason.
+
+- If you run into audio problems specific to 32-bit VST2 plugins, then try
+  starting your DAW with `YABRIDGE_NO_FUTEX=1` to rule out the futex based
+  audio channel, and with `YABRIDGE_NO_LINUX_SYSCALLS=1` to rule out the 32-bit
+  host's direct Linux system calls. See [Environment
+  variables](#environment-variables).
 
 - Both yabridgectl and yabridge try to diagnose many common issues for you. If
   you're running into crashes or other issues, then try launching your DAW from
@@ -699,12 +791,17 @@ plugin-specific issues.
   Assuming that yabridge is installed under `~/.local/share/yabridge`, then
   running `~/.local/share/yabridge/yabridge-host.exe` directly (so _not_
   `wine ~/.local/share/yabridge/yabridge-host.exe`, that won't work) in a terminal
-  should print a few messages related to Wine's startup process followed by the
-  following line:
+  should print a few messages related to Wine's startup process followed by a
+  line starting with:
 
   ```
-  Usage: yabridge-host.exe <plugin_type> <plugin_location> <endpoint_base_directory>
+  Usage: yabridge-host.exe <plugin_type> <plugin_location> ...
   ```
+
+  The 32-bit host is a regular Windows executable, so that one _does_ need to
+  be run through Wine: `wine ~/.local/share/yabridge/yabridge-host-32.exe` (or
+  `wine /usr/bin/yabridge-host-32.exe` when installed with the `PKGBUILD`)
+  should print the same kind of usage line.
 
   If you're seeing a `002b:err:module:__wine_process_init` error instead, then
   your version of Wine is too old for this version of yabridge and you'll have
@@ -713,7 +810,8 @@ plugin-specific issues.
 
   If you're getting a `0024:err:process:exec_process` error, then your Wine
   prefix is set to 32-bit only and it won't be possible to run 64-bit
-  applications like `yabridge-host.exe`.
+  applications like `yabridge-host.exe`. With WoW64 Wine such a prefix can't be
+  used for 32-bit plugins either, so use a regular 64-bit prefix instead.
 
 - Sometimes left over Wine processes can cause problems. Run `wineserver -k` to
   terminate Wine related in the current or default Wine prefix.
@@ -828,6 +926,14 @@ negative side effects:
   plugin. Hosting all instances of the same plugin in a single process can in
   those cases greatly reduce overall CPU usage and get rid of latency spikes.
 
+- For 32-bit VST2 plugins this version avoids `wineserver` on the audio thread
+  by using Linux futexes directly. That needs the kernel's 32-bit syscall
+  emulation (`CONFIG_IA32_EMULATION`), which is enabled in all common distro
+  kernels. If it's disabled, or if `ia32_emulation=0` is set on the kernel's
+  command line, then the 32-bit host falls back to the slower socket based path
+  and won't get realtime scheduling. 32-bit VST3 and CLAP plugins always use the
+  socket based path, so for 32-bit plugins the VST2 version may perform better.
+
 ### Environment configuration
 
 This section is relevant if you want to configure environment variables in such
@@ -885,10 +991,11 @@ To compile yabridge, you'll need [Meson](https://mesonbuild.com/index.html) and
 the following dependencies:
 
 - GCC 10+
-- A Wine installation with `winegcc` and the development headers. The latest
-  commits contain a workaround for a winelib [compilation
-  issue](https://bugs.winehq.org/show_bug.cgi?id=49138) with Wine 5.7+.
+- A Wine installation with `winegcc` and the development headers
 - libxcb
+- The `i686-w64-mingw32` MinGW-w64 cross compiler, for the 32-bit plugin host
+  (see [32-bit bitbridge](#32-bit-bitbridge))
+- Rust and Cargo, for `yabridgectl`
 
 The following dependencies are included in the repository as a Meson wrap:
 
@@ -910,6 +1017,13 @@ slightly longer build times.
 ```shell
 meson setup build --buildtype=release --cross-file=cross-wine.conf --unity=on --unity-size=1000
 ninja -C build
+```
+
+`yabridgectl` is built separately with Cargo:
+
+```shell
+cd tools/yabridgectl
+cargo build --release
 ```
 
 After you've finished building you can follow the instructions under the
@@ -966,6 +1080,9 @@ Yabridge will detect whether the plugin you're trying to load is 32-bit or
 64-bit, and will run either the regular version or the `*-32.exe` variant
 accordingly. The 32-bit host is started through `wine` (or `$WINELOADER`, if
 that's set).
+
+The `bitbridge` Meson option from upstream yabridge no longer builds anything.
+Use the `cross-mingw-i686.conf` cross file as shown above instead.
 
 There are a couple of differences between the two hosts, since the 32-bit host
 can only use the Windows API:
@@ -1033,8 +1150,9 @@ two environment variables to control yabridge's logging facilities:
   `src/common/logging.h`.
 
 See the [bug report
-template](https://github.com/robbert-vdh/yabridge/blob/master/.github/ISSUE_TEMPLATE/bug_report.yml)
-for an example of how to use this.
+template](.github/ISSUE_TEMPLATE/bug_report.yml) for an example of how to use
+this. Output from the 32-bit host ends up in the same place as the 64-bit
+host's.
 
 Wine's own [logging facilities](https://wiki.winehq.org/Debug_Channels) can also
 be very helpful when diagnosing problems. In particular the `+message`,
